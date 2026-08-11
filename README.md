@@ -31,3 +31,11 @@ Credentials, generated reports, runtime scan state, dependencies, and production
 ## Hosting requirement
 
 The scheduled audit and email functions run on the Node server. Static GitHub Pages hosting is not sufficient. Deploy the repository to an always-running Node host and configure the three environment variables in that host's secure settings.
+
+For Hostinger Web Apps use:
+
+- Build command: `npm ci && npm run build`
+- Start command: `npm start`
+- Node.js version: 20 or newer
+
+Add `GOOGLE_PAGESPEED_API_KEY`, `SMTP_USER`, and `SMTP_APP_PASSWORD` in the Web App environment-variable settings. The host-provided `PORT` value is used automatically.
