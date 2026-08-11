@@ -1,0 +1,19 @@
+{
+  "name": "webpulse-benchmark-dashboard",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "lucide-react": "latest",
+    "nodemailer": "^9.0.5",
+    "react": "latest",
+    "react-dom": "latest",
+    "vite": "latest"
+  }
+}
