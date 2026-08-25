@@ -327,12 +327,18 @@ function App() {
 
   async function downloadHistoryExcel() {
     try {
-      const response = await fetchWithStaticFallback('/api/history.xlsx', '/website-benchmark-score-history.xlsx')
-      if (!response.ok) {
-        const result = await response.json().catch(() => ({}))
-        throw new Error(result.error || 'Excel history export failed')
+      let response = await fetch('/api/history.xlsx', { cache: 'no-store' })
+      let blob = response.ok ? await response.blob() : null
+      const signature = blob ? new Uint8Array(await blob.slice(0, 4).arrayBuffer()) : []
+      if (!blob || signature[0] !== 0x50 || signature[1] !== 0x4b) {
+        const encodedResponse = await fetch('/benchmark-history-workbook.json', { cache: 'no-store' })
+        if (!encodedResponse.ok) throw new Error('Excel history export failed')
+        const encoded = await encodedResponse.json()
+        const binary = atob(encoded.base64 || '')
+        const bytes = Uint8Array.from(binary, character => character.charCodeAt(0))
+        if (bytes[0] !== 0x50 || bytes[1] !== 0x4b) throw new Error('Excel history export failed')
+        blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
       }
-      const blob = await response.blob()
       const disposition = response.headers.get('Content-Disposition') || ''
       const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1] || `website-benchmark-history-${new Date().toISOString().slice(0, 10)}.xlsx`
       const link = document.createElement('a')

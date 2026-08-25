@@ -1022,8 +1022,9 @@ function publicSnapshotPlugin() {
         source: JSON.stringify({ ...publicState, historyCount: history.length })
       })
       this.emitFile({ type: 'asset', fileName: 'benchmark-history.json', source: JSON.stringify({ history, total: history.length }) })
-      const workbook = await buildHistoryWorkbook(history)
-      this.emitFile({ type: 'asset', fileName: 'website-benchmark-score-history.xlsx', source: Buffer.from(workbook) })
+      const workbook = Buffer.from(await buildHistoryWorkbook(history))
+      this.emitFile({ type: 'asset', fileName: 'website-benchmark-score-history.xlsx', source: workbook })
+      this.emitFile({ type: 'asset', fileName: 'benchmark-history-workbook.json', source: JSON.stringify({ base64: workbook.toString('base64') }) })
     }
   }
 }
