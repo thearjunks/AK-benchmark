@@ -27,6 +27,8 @@ STC-branded React dashboard for comparing Mobile and Web Google PageSpeed scores
 - `SMTP_APP_PASSWORD` — Gmail App Password
 - `EMAIL_RECIPIENTS` — optional comma-separated production recipient list (kept out of Git)
 - `REPORT_TIME` — optional daily/monthly report time in Kuwait, for example `15:00`
+- `AUTO_SEND_AFTER_CHECK` — send the completed benchmark report after a successful manual scan (`true` by default)
+- `BENCHMARK_DATA_DIR` — optional persistent directory for runtime state; production defaults to `$HOME/.webpulse-benchmark`
 
 Credentials, generated reports, runtime scan state, dependencies, and production build output are excluded from Git.
 
@@ -34,10 +36,11 @@ Credentials, generated reports, runtime scan state, dependencies, and production
 
 The scheduled audit and email functions run on the Node server. Static GitHub Pages hosting is not sufficient. Deploy the repository to an always-running Node host and configure the three environment variables in that host's secure settings.
 
-For Hostinger Web Apps use:
+For Hostinger Web Apps select the **Other** framework preset and use:
 
-- Build command: `npm ci && npm run build`
-- Start command: `npm start`
+- Build command: `npm run build`
+- Output directory: `dist`
+- Entry file: `server.mjs`
 - Node.js version: 20 or newer
 
 Add `GOOGLE_PAGESPEED_API_KEY`, `SMTP_USER`, and `SMTP_APP_PASSWORD` in the Web App environment-variable settings. The host-provided `PORT` value is used automatically.

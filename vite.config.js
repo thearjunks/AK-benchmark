@@ -218,6 +218,10 @@ function pageSpeedPlugin(apiKey) {
         if (body.length > 8_192) throw new Error('Request is too large.')
       }
       const parsed = JSON.parse(body || '{}')
+      if (typeof parsed.url !== 'string' || !parsed.url.trim()) {
+        res.statusCode = 400
+        return res.end(JSON.stringify({ error: 'Website URL is required.' }))
+      }
       res.end(JSON.stringify(await analyzeWebsite(parsed.url, apiKey)))
     } catch (error) {
       res.statusCode = error.status && error.status >= 400 && error.status < 600 ? error.status : 500
@@ -278,13 +282,8 @@ async function sendMatrixEmail(transporter, config, recipients, sites) {
 
 export function buildHistoryEmail(history) {
   const emailMetrics = [['seo', 'SEO'], ['bestPractices', 'Best practices'], ['accessibility', 'Accessibility'], ['performance', 'Performance'], ['overall', 'Overall']]
-  const scoreStyle = value => {
-    if (typeof value !== 'number') return 'background:#f4f4f5;color:#8b9296'
-    if (value >= 90) return 'background:#e8f7f2;color:#007956'
-    if (value >= 75) return 'background:#f0e7f6;color:#4f008c'
-    if (value >= 60) return 'background:#fff3df;color:#a55e00'
-    return 'background:#ffedf1;color:#c80025'
-  }
+  const scoreClass = value => typeof value !== 'number' ? 'missing' : value >= 90 ? 'great' : value >= 75 ? 'good' : value >= 60 ? 'warn' : 'bad'
+  const domainColors = ['#ff375e', '#8736c5', '#00a1df', '#4f008c', '#c5003e', '#d71920']
   const dateKey = value => {
     const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
       timeZone: 'Asia/Kuwait', year: 'numeric', month: '2-digit', day: '2-digit'
@@ -294,8 +293,7 @@ export function buildHistoryEmail(history) {
   const orderedDomains = STANDARD_URLS.map(url => new URL(url).hostname.replace(/^www\./, ''))
   const extraDomains = [...new Set(history.map(record => record.domain))].filter(domain => !orderedDomains.includes(domain))
   const domains = [...orderedDomains, ...extraDomains]
-  const dates = [...new Set(history.map(record => dateKey(record.checkedAt)))].sort().reverse()
-  const emailDates = dates.slice(0, 5)
+  const dates = [...new Set(history.map(record => dateKey(record.checkedAt)))].sort()
   const latest = new Map()
   for (const record of [...history].sort((a, b) => new Date(a.checkedAt) - new Date(b.checkedAt))) {
     latest.set(`${dateKey(record.checkedAt)}|${record.domain}|${record.device}`, record)
@@ -305,28 +303,24 @@ export function buildHistoryEmail(history) {
   const checkedAt = value => new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Asia/Kuwait', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
   }).format(new Date(value))
-  const renderGroup = (group, groupIndex) => {
-    const siteHeaders = group.map(domain => `<th style="padding:12px;border-left:1px solid #e5e6e8;text-align:left;min-width:190px"><div style="font-size:13px;color:#1d252d">${escapeHtml(domain)}</div><div style="font-size:10px;color:#7d858a;margin-top:3px">${escapeHtml(WEBSITE_META[domain]?.name || domain)}</div></th>`).join('')
-    const dateRows = emailDates.map(date => {
-      const metricRows = emailMetrics.map(([key, label]) => `<tr>
-        <td style="padding:9px 12px;border-top:1px solid #e5e6e8;font-size:11px;font-weight:700;color:#1d252d">${escapeHtml(label)}</td>
-        ${group.map(domain => {
-          const mobile = latest.get(`${date}|${domain}|Mobile`)?.[key]
-          const desktop = latest.get(`${date}|${domain}|Web`)?.[key]
-          return `<td style="padding:7px;border-left:1px solid #e5e6e8;border-top:1px solid #e5e6e8"><table role="presentation" style="width:100%;border-spacing:5px 0"><tr><td style="${scoreStyle(mobile)};padding:8px;border-radius:6px;font-size:9px">Mobile <strong style="float:right;font-size:14px">${escapeHtml(mobile ?? 'N/A')}</strong></td><td style="${scoreStyle(desktop)};padding:8px;border-radius:6px;font-size:9px">Desktop <strong style="float:right;font-size:14px">${escapeHtml(desktop ?? 'N/A')}</strong></td></tr></table></td>`
-        }).join('')}
-      </tr>`).join('')
-      const auditRow = `<tr><td style="padding:8px 12px;border-top:1px solid #e5e6e8;font-size:10px;font-weight:700;color:#596369">Checked</td>${group.map(domain => {
-        const records = ['Mobile', 'Web'].map(device => latest.get(`${date}|${domain}|${device}`)).filter(Boolean).sort((a, b) => new Date(b.checkedAt) - new Date(a.checkedAt))
-        const record = records[0]
-        return `<td style="padding:8px 12px;border-left:1px solid #e5e6e8;border-top:1px solid #e5e6e8;font-size:9px;color:#6f777c">${record ? `${escapeHtml(checkedAt(record.checkedAt))}<br><a href="${escapeHtml(record.url || '')}" style="color:#4f008c">${escapeHtml(record.url || '')}</a>` : 'N/A'}</td>`
-      }).join('')}</tr>`
-      return `<tr><td colspan="${group.length + 1}" style="padding:8px 12px;background:#f4eff8;color:#4f008c;font-size:11px;font-weight:700;border-top:1px solid #d9c8e4">${escapeHtml(displayDate(date))}</td></tr>${metricRows}${auditRow}`
+  const domainHeaders = domains.map((domain, index) => `<th class="domain" colspan="12" style="background:${domainColors[index % domainColors.length]}">${escapeHtml(domain)}<small>${escapeHtml(WEBSITE_META[domain]?.name || domain)}</small></th>`).join('')
+  const deviceHeaders = domains.map((domain, index) => `<th class="device" colspan="5" style="background:${domainColors[index % domainColors.length]}">Mobile</th><th class="device" colspan="5" style="background:${domainColors[index % domainColors.length]}">Desktop</th><th class="device" colspan="2" style="background:${domainColors[index % domainColors.length]}">Audit details</th>`).join('')
+  const metricHeaders = domains.map(() => `${['Mobile', 'Desktop'].map(() => emailMetrics.map(([, label]) => `<th>${escapeHtml(label)}</th>`).join('')).join('')}<th>Checked date &amp; time</th><th>Source URL</th>`).join('')
+  const dataRows = dates.map(date => `<tr><th class="date">${escapeHtml(displayDate(date))}</th>${domains.map(domain => {
+    const deviceCells = ['Mobile', 'Web'].map(device => {
+      const record = latest.get(`${date}|${domain}|${device}`)
+      return emailMetrics.map(([key]) => `<td class="score ${scoreClass(record?.[key])}">${escapeHtml(record?.[key] ?? 'N/A')}</td>`).join('')
     }).join('')
-    return `<div style="margin-top:${groupIndex ? '16px' : '0'};border:1px solid #e1e2e4;border-radius:10px;overflow:hidden"><div style="height:30px;line-height:30px;padding:0 12px;background:#4f008c;color:#fff;font-size:10px;font-weight:700;letter-spacing:.7px;text-transform:uppercase">Websites ${groupIndex * 3 + 1}–${groupIndex * 3 + group.length}</div><div style="overflow-x:auto"><table style="width:100%;min-width:760px;border-collapse:collapse"><thead><tr style="background:#fafafa"><th style="padding:12px;text-align:left;color:#737c81;font-size:10px;width:120px">Scan history</th>${siteHeaders}</tr></thead><tbody>${dateRows}</tbody></table></div></div>`
-  }
+    const records = ['Mobile', 'Web'].map(device => latest.get(`${date}|${domain}|${device}`)).filter(Boolean).sort((a, b) => new Date(b.checkedAt) - new Date(a.checkedAt))
+    const record = records[0]
+    const audit = record ? `<td class="checked">${escapeHtml(checkedAt(record.checkedAt))}</td><td class="url"><a href="${escapeHtml(record.url || '')}">${escapeHtml(record.url || '')}</a></td>` : '<td class="missing">N/A</td><td class="missing">N/A</td>'
+    return `${deviceCells}${audit}`
+  }).join('')}</tr>`).join('')
   const generatedAt = new Date().toLocaleString('en-GB', { timeZone: 'Asia/Kuwait', dateStyle: 'medium', timeStyle: 'short' })
-  const html = `<div style="font-family:Arial,sans-serif;color:#1d252d;max-width:900px;margin:auto;background:#f7f7f8;padding:20px"><div style="background:#fff;border:1px solid #dedfe1;border-radius:12px;overflow:hidden"><div style="padding:20px;border-bottom:1px solid #e5e6e8"><div style="font-size:10px;letter-spacing:1px;font-weight:700;color:#4f008c;text-transform:uppercase">Score history</div><div style="font-size:20px;font-weight:700;margin-top:5px">Website Score History Report</div><div style="font-size:11px;color:#7d858a;margin-top:5px">${domains.length} websites · ${dates.length} historical scan dates · Mobile and Desktop</div><div style="margin-top:10px;padding:9px 11px;border-radius:7px;background:#f4eff8;color:#4f008c;font-size:10px">Latest ${emailDates.length} scan dates are shown below. The complete Excel history is attached.</div></div><div style="padding:16px">${groups.map(renderGroup).join('')}</div><div style="padding:12px 20px;border-top:1px solid #e5e6e8;font-size:9px;color:#8b9296">Generated ${escapeHtml(generatedAt)} Kuwait time · Google PageSpeed Insights</div></div></div>`
+  const mobileCount = history.filter(record => record.device === 'Mobile').length
+  const webCount = history.filter(record => record.device === 'Web').length
+  const latestDate = history.reduce((latestValue, record) => !latestValue || new Date(record.checkedAt) > new Date(latestValue) ? record.checkedAt : latestValue, null)
+  const html = `<style>.wrap{font-family:Arial,sans-serif;color:#111827;background:#f7f7f8;padding:16px}.card{background:#fff;border:1px solid #dfe2e5;border-radius:12px;overflow:hidden}.head{padding:18px 20px}.eyebrow{font-size:10px;letter-spacing:1px;font-weight:700;color:#4f008c;text-transform:uppercase}.head h1{font-size:20px;margin:5px 0}.head p{font-size:10px;color:#778087;margin:0}.kpis{width:100%;border-collapse:collapse;border-top:1px solid #e2e4e6}.kpis td{padding:10px 12px;border-right:1px solid #e2e4e6}.kpis td:last-child{border-right:0}.kpis span{display:block;font-size:8px;color:#788187}.kpis b{display:block;font-size:18px;margin:4px 0}.kpis small{font-size:8px;color:#899196}.section{padding:15px}.section h2{font-size:15px;margin:3px 0}.section p{font-size:9px;color:#7b8489}.scroll{overflow-x:auto;border:1px solid #dfe2e4}.matrix{border-collapse:collapse;min-width:4200px;width:100%}.matrix th,.matrix td{border:1px solid #dde1e3;text-align:center;padding:7px 6px;font-size:9px}.matrix .datehead{background:#1d252d;color:#fff;min-width:90px}.matrix .domain{color:#fff;font-size:11px;padding:10px}.matrix .domain small{display:block;font-size:8px;margin-top:2px}.matrix .device{color:#fff;border-top-color:rgba(255,255,255,.5)}.matrix thead tr:nth-child(3) th{background:#fff1f4;min-width:56px}.matrix .date{background:#f6f7f8;white-space:nowrap}.score{font-weight:700}.great{background:#e8f7f2;color:#007956}.good{background:#f0e7f6;color:#4f008c}.warn{background:#fff3df;color:#a55e00}.bad{background:#ffedf1;color:#c80025}.missing{background:#f1f2f3;color:#8a9298}.checked{color:#737c81;white-space:nowrap}.url{text-align:left!important;min-width:180px}.url a{color:#4f008c;text-decoration:none}.foot{padding:11px 20px;border-top:1px solid #e5e6e8;font-size:8px;color:#8b9296}</style><div class="wrap"><div class="card"><div class="head"><div class="eyebrow">Score history</div><h1>Website Score History Report</h1><p>The complete six-website Mobile and Desktop score history is shown below. The Excel workbook is attached.</p></div><table class="kpis" role="presentation"><tr><td><span>History records</span><b>${history.length}</b><small>Mobile and Web rows</small></td><td><span>Websites tracked</span><b>${domains.length}</b><small>Ordered competitor set</small></td><td><span>Mobile records</span><b>${mobileCount}</b><small>Google PageSpeed Mobile</small></td><td><span>Web records</span><b>${webCount}</b><small>Google PageSpeed Web</small></td><td><span>Latest history</span><b style="font-size:11px">${latestDate ? escapeHtml(checkedAt(latestDate)) : 'N/A'}</b><small>Asia/Kuwait time</small></td></tr></table><div class="section"><div class="eyebrow">Excel-style score archive</div><h2>Six-website history comparison</h2><p>Each row is one Kuwait calendar date. Scroll horizontally to compare every domain.</p><div class="scroll"><table class="matrix"><thead><tr><th class="datehead" rowspan="3">Date</th>${domainHeaders}</tr><tr>${deviceHeaders}</tr><tr>${metricHeaders}</tr></thead><tbody>${dataRows}</tbody></table></div></div><div class="foot">Generated ${escapeHtml(generatedAt)} Kuwait time · Google PageSpeed Insights</div></div></div>`
   const text = `Website Score History Report\n\n${dates.map(date => `${displayDate(date)}\n${domains.map(domain => ['Mobile', 'Web'].map(device => { const record = latest.get(`${date}|${domain}|${device}`); return `${domain} ${device === 'Web' ? 'Desktop' : device}: ${emailMetrics.map(([key, label]) => `${label} ${record?.[key] ?? 'N/A'}`).join(' | ')}` }).join('\n')).join('\n')}`).join('\n\n')}`
   return { html, text, dates, domains }
 }
@@ -741,8 +735,14 @@ async function buildHistoryWorkbook(history) {
 }
 
 function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
-  const stateFile = path.join(process.cwd(), 'work', 'benchmark-automation-state.json')
-  const settingsFile = path.join(process.cwd(), 'work', 'benchmark-email-settings.json')
+  const bundledStateFile = path.join(process.cwd(), 'work', 'benchmark-automation-state.json')
+  const isHostedRuntime = (process.env.NODE_ENV === 'production' || Boolean(process.env.PORT)) && process.env.HOME
+  const defaultRuntimeDir = isHostedRuntime
+    ? path.join(process.env.HOME, '.webpulse-benchmark')
+    : path.join(process.cwd(), 'work')
+  const runtimeDir = process.env.BENCHMARK_DATA_DIR || defaultRuntimeDir
+  const stateFile = path.join(runtimeDir, 'benchmark-automation-state.json')
+  const settingsFile = path.join(runtimeDir, 'benchmark-email-settings.json')
   const transporter = createGmailTransporter(emailConfig)
   let timer = null
   let monthlyTimer = null
@@ -754,8 +754,10 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
   }
   let settings = {
     recipients: deploymentConfig.recipients || [], schedule: 'Daily summary', time: deploymentConfig.time || '15:00', day: 'Sunday', enabled: true,
-    autoSendAfterCheck: false, reportType: 'benchmark', monthlyHistoryEnabled: true, lastMonthlyHistoryPeriod: null
+    autoSendAfterCheck: deploymentConfig.autoSendAfterCheck === true, reportType: 'benchmark', monthlyHistoryEnabled: true, lastMonthlyHistoryPeriod: null
   }
+  let initialized = false
+  let initializationError = null
 
   const persistState = () => writeJson(stateFile, state)
   const persistSettings = () => writeJson(settingsFile, settings)
@@ -785,7 +787,8 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
   }
 
   async function initialize() {
-    state = await readJson(stateFile, state)
+    const bundledState = await readJson(bundledStateFile, state)
+    state = await readJson(stateFile, bundledState)
     const resumeInterruptedRun = state.status === 'running'
     settings = { ...settings, ...await readJson(settingsFile, {}) }
     if (!settings.recipients.length && deploymentConfig.recipients?.length) settings.recipients = deploymentConfig.recipients
@@ -798,6 +801,8 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
     state.history = mergeHistory(state.history, seedSites.flatMap(historyRecordsForSite))
     state.nextRunAt = nextKuwaitRun(settings.time)
     await persistState()
+    initialized = true
+    initializationError = null
     scheduleNextRun()
     scheduleMonthlyHistoryRun()
     if (dueMonthlyHistoryPeriod(settings.time) && settings.lastMonthlyHistoryPeriod !== dueMonthlyHistoryPeriod(settings.time)) {
@@ -916,6 +921,18 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
 
   const handler = async (req, res, next) => {
     const requestPath = req.url?.split('?')[0]
+    res.setHeader('Cache-Control', 'no-store')
+    if (req.method === 'GET' && requestPath === '/api/health') {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8')
+      res.statusCode = initialized ? 200 : 503
+      return res.end(JSON.stringify({
+        status: initialized ? 'ok' : 'starting', runtime: 'node', initialized,
+        pageSpeedConfigured: Boolean(apiKey), emailConfigured: Boolean(transporter),
+        schedulerEnabled: true, persistence: initialized ? 'writable' : 'pending',
+        historyCount: state.history?.length || 0,
+        error: initializationError
+      }))
+    }
     if (req.method === 'GET' && requestPath === '/api/automation-state') {
       res.setHeader('Content-Type', 'application/json; charset=utf-8')
       const { history, ...publicState } = state
@@ -1002,7 +1019,10 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
 
   const configure = server => {
     server.middlewares.use(handler)
-    initialize().catch(error => { state = { ...state, status: 'failed', error: cleanText(error.message) } })
+    initialize().catch(error => {
+      initializationError = cleanText(error.message)
+      state = { ...state, status: 'failed', error: initializationError }
+    })
     server.httpServer?.once('close', () => { if (timer) clearTimeout(timer); if (monthlyTimer) clearTimeout(monthlyTimer) })
   }
   return { name: 'daily-benchmark-automation', configureServer: configure, configurePreviewServer: configure }
@@ -1034,7 +1054,8 @@ export default defineConfig(({ mode }) => {
   const emailConfig = { user: env.SMTP_USER, password: env.SMTP_APP_PASSWORD }
   const deploymentConfig = {
     recipients: [...new Set(String(env.EMAIL_RECIPIENTS || '').split(',').map(value => value.trim().toLowerCase()).filter(value => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)))],
-    time: /^([01]\d|2[0-3]):([0-5]\d)$/.test(env.REPORT_TIME || '') ? env.REPORT_TIME : '15:00'
+    time: /^([01]\d|2[0-3]):([0-5]\d)$/.test(env.REPORT_TIME || '') ? env.REPORT_TIME : '15:00',
+    autoSendAfterCheck: String(env.AUTO_SEND_AFTER_CHECK || 'true').toLowerCase() === 'true'
   }
   return {
     plugins: [

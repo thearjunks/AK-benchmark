@@ -218,4 +218,7 @@ footer { color:var(--stc-gray); }.toast { background:var(--stc-purple);color:var
 @media(max-width:1200px){.standard-monitor-head{align-items:flex-start;flex-direction:column}.automation-actions{width:100%;justify-content:flex-end;flex-wrap:wrap}}
 @media(max-width:700px){.automation-actions{justify-content:stretch;gap:8px}.automation-actions>.next-run{width:100%;text-align:left}.auto-send-toggle,.automation-actions>button{flex:1;justify-content:center}.standard-url-grid{grid-template-columns:1fr}.standard-monitor-head h1{font-size:19px}}
 .email-layout,.email-setup-card,.email-preview-card{min-width:0}
+.email-preview-card{grid-column:1/-1}
+.email-setup-card{grid-column:1/-1;max-width:760px}
+.email-history-kpis{margin-bottom:12px}
 @media(max-width:1000px){.email-layout{grid-template-columns:minmax(0,1fr)}}
