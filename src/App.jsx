@@ -388,6 +388,7 @@ function App() {
 
   async function runStandardCheck() {
     if (automation.status === 'running') return
+    if (automation.hostingMode === 'static-snapshot') return notify('Live score checks require the Hostinger Node backend to be enabled')
     try {
       const response = await fetch('/api/automation/run', { method: 'POST' })
       const result = await response.json().catch(() => ({}))
@@ -513,13 +514,13 @@ function App() {
         <button className={view === 'findings' ? 'active' : ''} onClick={() => setView('findings')}><AlertTriangle size={18}/><span>Audit findings</span><b>{issues.length}</b></button>
         <button className={view === 'emails' ? 'active' : ''} onClick={() => setView('emails')}><Mail size={18}/><span>Emails to send</span></button>
       </nav>
-      <div className="sidebar-source"><i></i><span><strong>Google PageSpeed</strong><small>Live audit source</small></span></div>
+      <div className="sidebar-source"><i></i><span><strong>Google PageSpeed</strong><small>{automation.hostingMode === 'static-snapshot' ? 'Saved audit snapshot' : 'Live audit source'}</small></span></div>
     </aside>
 
     <div className="dashboard-body">
     <header className="matrix-topbar">
       <div className="page-context"><span>STC Kuwait digital intelligence</span><strong>{view === 'overview' ? 'Benchmark overview' : view === 'history' ? 'Score history' : view === 'findings' ? 'Audit findings' : 'Emails to send'}</strong></div>
-      <div className="top-status"><i></i>Google PageSpeed live</div>
+      <div className="top-status"><i></i>{automation.hostingMode === 'static-snapshot' ? 'Saved PageSpeed data' : 'Google PageSpeed live'}</div>
       <div className="report-actions">
         <button onClick={downloadHistoryExcel}><Download size={16}/>Excel history</button>
         <button className="primary" onClick={() => sites.length ? window.print() : notify('No benchmark results to export')}><FileText size={16}/>PDF report</button>

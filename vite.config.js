@@ -1019,7 +1019,7 @@ function publicSnapshotPlugin() {
       this.emitFile({
         type: 'asset',
         fileName: 'benchmark-automation-state.json',
-        source: JSON.stringify({ ...publicState, historyCount: history.length })
+        source: JSON.stringify({ ...publicState, historyCount: history.length, hostingMode: 'static-snapshot' })
       })
       this.emitFile({ type: 'asset', fileName: 'benchmark-history.json', source: JSON.stringify({ history, total: history.length }) })
       const workbook = Buffer.from(await buildHistoryWorkbook(history))
