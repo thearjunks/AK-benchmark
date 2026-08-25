@@ -95,6 +95,11 @@ function loadEmailRecipients() {
   return legacy ? [legacy] : []
 }
 
+async function fetchWithStaticFallback(apiPath, staticPath) {
+  const response = await fetch(apiPath, { cache: 'no-store' })
+  return response.ok ? response : fetch(staticPath, { cache: 'no-store' })
+}
+
 function App() {
   const [sites, setSites] = useState(() => loadSaved('webpulse-live-sites-v1'))
   const [issues, setIssues] = useState(() => loadSaved('webpulse-live-issues-v1'))
@@ -174,7 +179,7 @@ function App() {
     let active = true
     const refreshHistory = async () => {
       try {
-        const response = await fetch('/api/history', { cache: 'no-store' })
+        const response = await fetchWithStaticFallback('/api/history', '/benchmark-history.json')
         if (!response.ok) return
         const result = await response.json()
         if (active) setHistory(Array.isArray(result.history) ? result.history : [])
@@ -205,7 +210,7 @@ function App() {
     let active = true
     const refresh = async () => {
       try {
-        const response = await fetch('/api/automation-state', { cache: 'no-store' })
+        const response = await fetchWithStaticFallback('/api/automation-state', '/benchmark-automation-state.json')
         const next = await response.json()
         if (!active) return
         setAutomation(next)
@@ -322,7 +327,7 @@ function App() {
 
   async function downloadHistoryExcel() {
     try {
-      const response = await fetch('/api/history.xlsx', { cache: 'no-store' })
+      const response = await fetchWithStaticFallback('/api/history.xlsx', '/website-benchmark-score-history.xlsx')
       if (!response.ok) {
         const result = await response.json().catch(() => ({}))
         throw new Error(result.error || 'Excel history export failed')

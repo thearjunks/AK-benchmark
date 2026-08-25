@@ -1008,6 +1008,26 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
   return { name: 'daily-benchmark-automation', configureServer: configure, configurePreviewServer: configure }
 }
 
+function publicSnapshotPlugin() {
+  return {
+    name: 'public-benchmark-snapshot',
+    apply: 'build',
+    async generateBundle() {
+      const saved = await readJson(path.join(process.cwd(), 'work', 'benchmark-automation-state.json'), {})
+      const history = Array.isArray(saved.history) ? saved.history : []
+      const { history: ignoredHistory, ...publicState } = saved
+      this.emitFile({
+        type: 'asset',
+        fileName: 'benchmark-automation-state.json',
+        source: JSON.stringify({ ...publicState, historyCount: history.length })
+      })
+      this.emitFile({ type: 'asset', fileName: 'benchmark-history.json', source: JSON.stringify({ history, total: history.length }) })
+      const workbook = await buildHistoryWorkbook(history)
+      this.emitFile({ type: 'asset', fileName: 'website-benchmark-score-history.xlsx', source: Buffer.from(workbook) })
+    }
+  }
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const emailConfig = { user: env.SMTP_USER, password: env.SMTP_APP_PASSWORD }
@@ -1020,7 +1040,8 @@ export default defineConfig(({ mode }) => {
       react(),
       pageSpeedPlugin(env.GOOGLE_PAGESPEED_API_KEY),
       emailReportPlugin(emailConfig),
-      automationPlugin(env.GOOGLE_PAGESPEED_API_KEY, emailConfig, deploymentConfig)
+      automationPlugin(env.GOOGLE_PAGESPEED_API_KEY, emailConfig, deploymentConfig),
+      publicSnapshotPlugin()
     ]
   }
 })
