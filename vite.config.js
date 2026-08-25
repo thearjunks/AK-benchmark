@@ -1058,6 +1058,9 @@ export default defineConfig(({ mode }) => {
     autoSendAfterCheck: String(env.AUTO_SEND_AFTER_CHECK || 'true').toLowerCase() === 'true'
   }
   return {
+    preview: {
+      allowedHosts: ['bench.stcdigitalhub.com']
+    },
     plugins: [
       react(),
       pageSpeedPlugin(env.GOOGLE_PAGESPEED_API_KEY),
