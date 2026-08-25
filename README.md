@@ -17,14 +17,16 @@ STC-branded React dashboard for comparing Mobile and Web Google PageSpeed scores
 1. Install Node.js 20 or newer.
 2. Run `npm install`.
 3. Copy `.env.example` to `.env.local` and add the required credentials.
-4. Run `npm run dev -- --port 4173`.
-5. Open `http://localhost:4173/`.
+4. Run `npm run dev -- --port 56436 --strictPort`.
+5. Open `http://localhost:56436/`.
 
 ## Environment variables
 
 - `GOOGLE_PAGESPEED_API_KEY` — Google PageSpeed Insights API key
 - `SMTP_USER` — Gmail sender address
 - `SMTP_APP_PASSWORD` — Gmail App Password
+- `EMAIL_RECIPIENTS` — optional comma-separated production recipient list (kept out of Git)
+- `REPORT_TIME` — optional daily/monthly report time in Kuwait, for example `15:00`
 
 Credentials, generated reports, runtime scan state, dependencies, and production build output are excluded from Git.
 

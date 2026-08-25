@@ -3,6 +3,9 @@ dist/
 .vite/
 *.log
 work/
+!work/
+work/*
+!work/benchmark-automation-state.json
 .env
 .env.local
 .env.*.local

@@ -1,7 +1,7 @@
 import { preview } from 'vite'
 
-const requestedPort = Number.parseInt(process.env.PORT || '4173', 10)
-const port = Number.isFinite(requestedPort) ? requestedPort : 4173
+const requestedPort = Number.parseInt(process.env.PORT || '56436', 10)
+const port = Number.isFinite(requestedPort) ? requestedPort : 56436
 
 const server = await preview({
   clearScreen: false,

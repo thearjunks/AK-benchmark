@@ -14,10 +14,14 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
+    "exceljs": "^4.4.0",
     "lucide-react": "latest",
     "nodemailer": "^9.0.5",
     "react": "latest",
     "react-dom": "latest",
     "vite": "latest"
+  },
+  "overrides": {
+    "uuid": "11.1.1"
   }
 }
