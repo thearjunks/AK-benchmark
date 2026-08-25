@@ -4,6 +4,7 @@ import nodemailer from 'nodemailer'
 import ExcelJS from 'exceljs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { authPlugin } from './auth.mjs'
 
 const CATEGORIES = ['performance', 'accessibility', 'best-practices', 'seo']
 const SEVERITY_RANK = { Critical: 0, High: 1, Medium: 2, Low: 3 }
@@ -280,16 +281,28 @@ async function sendMatrixEmail(transporter, config, recipients, sites) {
   })
 }
 
+function historyDateKey(value) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kuwait', year: 'numeric', month: '2-digit', day: '2-digit'
+  }).formatToParts(new Date(value)).map(part => [part.type, part.value]))
+  return `${parts.year}-${parts.month}-${parts.day}`
+}
+
+export function filterHistoryByDateRange(history, dateFrom = '', dateTo = '') {
+  const validDate = value => !value || /^\d{4}-\d{2}-\d{2}$/.test(value)
+  if (!validDate(dateFrom) || !validDate(dateTo)) throw new Error('Use valid From and To dates.')
+  if (dateFrom && dateTo && dateFrom > dateTo) throw new Error('The From date must be before the To date.')
+  return history.filter(record => {
+    const date = historyDateKey(record.checkedAt)
+    return (!dateFrom || date >= dateFrom) && (!dateTo || date <= dateTo)
+  })
+}
+
 export function buildHistoryEmail(history) {
   const emailMetrics = [['seo', 'SEO'], ['bestPractices', 'Best practices'], ['accessibility', 'Accessibility'], ['performance', 'Performance'], ['overall', 'Overall']]
   const scoreClass = value => typeof value !== 'number' ? 'missing' : value >= 90 ? 'great' : value >= 75 ? 'good' : value >= 60 ? 'warn' : 'bad'
   const domainColors = ['#ff375e', '#8736c5', '#00a1df', '#4f008c', '#c5003e', '#d71920']
-  const dateKey = value => {
-    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
-      timeZone: 'Asia/Kuwait', year: 'numeric', month: '2-digit', day: '2-digit'
-    }).formatToParts(new Date(value)).map(part => [part.type, part.value]))
-    return `${parts.year}-${parts.month}-${parts.day}`
-  }
+  const dateKey = historyDateKey
   const orderedDomains = STANDARD_URLS.map(url => new URL(url).hostname.replace(/^www\./, ''))
   const extraDomains = [...new Set(history.map(record => record.domain))].filter(domain => !orderedDomains.includes(domain))
   const domains = [...orderedDomains, ...extraDomains]
@@ -317,21 +330,22 @@ export function buildHistoryEmail(history) {
     return `${deviceCells}${audit}`
   }).join('')}</tr>`).join('')
   const generatedAt = new Date().toLocaleString('en-GB', { timeZone: 'Asia/Kuwait', dateStyle: 'medium', timeStyle: 'short' })
+  const periodLabel = dates.length === 1 ? displayDate(dates[0]) : dates.length ? `${displayDate(dates[0])} to ${displayDate(dates.at(-1))}` : 'No dates'
   const mobileCount = history.filter(record => record.device === 'Mobile').length
   const webCount = history.filter(record => record.device === 'Web').length
   const latestDate = history.reduce((latestValue, record) => !latestValue || new Date(record.checkedAt) > new Date(latestValue) ? record.checkedAt : latestValue, null)
-  const html = `<style>.wrap{font-family:Arial,sans-serif;color:#111827;background:#f7f7f8;padding:16px}.card{background:#fff;border:1px solid #dfe2e5;border-radius:12px;overflow:hidden}.head{padding:18px 20px}.eyebrow{font-size:10px;letter-spacing:1px;font-weight:700;color:#4f008c;text-transform:uppercase}.head h1{font-size:20px;margin:5px 0}.head p{font-size:10px;color:#778087;margin:0}.kpis{width:100%;border-collapse:collapse;border-top:1px solid #e2e4e6}.kpis td{padding:10px 12px;border-right:1px solid #e2e4e6}.kpis td:last-child{border-right:0}.kpis span{display:block;font-size:8px;color:#788187}.kpis b{display:block;font-size:18px;margin:4px 0}.kpis small{font-size:8px;color:#899196}.section{padding:15px}.section h2{font-size:15px;margin:3px 0}.section p{font-size:9px;color:#7b8489}.scroll{overflow-x:auto;border:1px solid #dfe2e4}.matrix{border-collapse:collapse;min-width:4200px;width:100%}.matrix th,.matrix td{border:1px solid #dde1e3;text-align:center;padding:7px 6px;font-size:9px}.matrix .datehead{background:#1d252d;color:#fff;min-width:90px}.matrix .domain{color:#fff;font-size:11px;padding:10px}.matrix .domain small{display:block;font-size:8px;margin-top:2px}.matrix .device{color:#fff;border-top-color:rgba(255,255,255,.5)}.matrix thead tr:nth-child(3) th{background:#fff1f4;min-width:56px}.matrix .date{background:#f6f7f8;white-space:nowrap}.score{font-weight:700}.great{background:#e8f7f2;color:#007956}.good{background:#f0e7f6;color:#4f008c}.warn{background:#fff3df;color:#a55e00}.bad{background:#ffedf1;color:#c80025}.missing{background:#f1f2f3;color:#8a9298}.checked{color:#737c81;white-space:nowrap}.url{text-align:left!important;min-width:180px}.url a{color:#4f008c;text-decoration:none}.foot{padding:11px 20px;border-top:1px solid #e5e6e8;font-size:8px;color:#8b9296}</style><div class="wrap"><div class="card"><div class="head"><div class="eyebrow">Score history</div><h1>Website Score History Report</h1><p>The complete six-website Mobile and Desktop score history is shown below. The Excel workbook is attached.</p></div><table class="kpis" role="presentation"><tr><td><span>History records</span><b>${history.length}</b><small>Mobile and Web rows</small></td><td><span>Websites tracked</span><b>${domains.length}</b><small>Ordered competitor set</small></td><td><span>Mobile records</span><b>${mobileCount}</b><small>Google PageSpeed Mobile</small></td><td><span>Web records</span><b>${webCount}</b><small>Google PageSpeed Web</small></td><td><span>Latest history</span><b style="font-size:11px">${latestDate ? escapeHtml(checkedAt(latestDate)) : 'N/A'}</b><small>Asia/Kuwait time</small></td></tr></table><div class="section"><div class="eyebrow">Excel-style score archive</div><h2>Six-website history comparison</h2><p>Each row is one Kuwait calendar date. Scroll horizontally to compare every domain.</p><div class="scroll"><table class="matrix"><thead><tr><th class="datehead" rowspan="3">Date</th>${domainHeaders}</tr><tr>${deviceHeaders}</tr><tr>${metricHeaders}</tr></thead><tbody>${dataRows}</tbody></table></div></div><div class="foot">Generated ${escapeHtml(generatedAt)} Kuwait time · Google PageSpeed Insights</div></div></div>`
+  const html = `<style>.wrap{font-family:Arial,sans-serif;color:#111827;background:#f7f7f8;padding:16px}.card{background:#fff;border:1px solid #dfe2e5;border-radius:12px;overflow:hidden}.head{padding:18px 20px}.eyebrow{font-size:10px;letter-spacing:1px;font-weight:700;color:#4f008c;text-transform:uppercase}.head h1{font-size:20px;margin:5px 0}.head p{font-size:10px;color:#778087;margin:0}.kpis{width:100%;border-collapse:collapse;border-top:1px solid #e2e4e6}.kpis td{padding:10px 12px;border-right:1px solid #e2e4e6}.kpis td:last-child{border-right:0}.kpis span{display:block;font-size:8px;color:#788187}.kpis b{display:block;font-size:18px;margin:4px 0}.kpis small{font-size:8px;color:#899196}.section{padding:15px}.section h2{font-size:15px;margin:3px 0}.section p{font-size:9px;color:#7b8489}.scroll{overflow-x:auto;border:1px solid #dfe2e4}.matrix{border-collapse:collapse;min-width:4200px;width:100%}.matrix th,.matrix td{border:1px solid #dde1e3;text-align:center;padding:7px 6px;font-size:9px}.matrix .datehead{background:#1d252d;color:#fff;min-width:90px}.matrix .domain{color:#fff;font-size:11px;padding:10px}.matrix .domain small{display:block;font-size:8px;margin-top:2px}.matrix .device{color:#fff;border-top-color:rgba(255,255,255,.5)}.matrix thead tr:nth-child(3) th{background:#fff1f4;min-width:56px}.matrix .date{background:#f6f7f8;white-space:nowrap}.score{font-weight:700}.great{background:#e8f7f2;color:#007956}.good{background:#f0e7f6;color:#4f008c}.warn{background:#fff3df;color:#a55e00}.bad{background:#ffedf1;color:#c80025}.missing{background:#f1f2f3;color:#8a9298}.checked{color:#737c81;white-space:nowrap}.url{text-align:left!important;min-width:180px}.url a{color:#4f008c;text-decoration:none}.foot{padding:11px 20px;border-top:1px solid #e5e6e8;font-size:8px;color:#8b9296}</style><div class="wrap"><div class="card"><div class="head"><div class="eyebrow">Score history</div><h1>Website Score History Report</h1><p>${escapeHtml(periodLabel)} · Six-website Mobile and Desktop scores. The filtered Excel workbook is attached.</p></div><table class="kpis" role="presentation"><tr><td><span>History records</span><b>${history.length}</b><small>Mobile and Web rows</small></td><td><span>Websites tracked</span><b>${domains.length}</b><small>Ordered competitor set</small></td><td><span>Mobile records</span><b>${mobileCount}</b><small>Google PageSpeed Mobile</small></td><td><span>Web records</span><b>${webCount}</b><small>Google PageSpeed Web</small></td><td><span>Latest history</span><b style="font-size:11px">${latestDate ? escapeHtml(checkedAt(latestDate)) : 'N/A'}</b><small>Asia/Kuwait time</small></td></tr></table><div class="section"><div class="eyebrow">Excel-style score archive</div><h2>Six-website history comparison</h2><p>Each row is one Kuwait calendar date. Scroll horizontally to compare every domain.</p><div class="scroll"><table class="matrix"><thead><tr><th class="datehead" rowspan="3">Date</th>${domainHeaders}</tr><tr>${deviceHeaders}</tr><tr>${metricHeaders}</tr></thead><tbody>${dataRows}</tbody></table></div></div><div class="foot">Generated ${escapeHtml(generatedAt)} Kuwait time · Google PageSpeed Insights</div></div></div>`
   const text = `Website Score History Report\n\n${dates.map(date => `${displayDate(date)}\n${domains.map(domain => ['Mobile', 'Web'].map(device => { const record = latest.get(`${date}|${domain}|${device}`); return `${domain} ${device === 'Web' ? 'Desktop' : device}: ${emailMetrics.map(([key, label]) => `${label} ${record?.[key] ?? 'N/A'}`).join(' | ')}` }).join('\n')).join('\n')}`).join('\n\n')}`
-  return { html, text, dates, domains }
+  return { html, text, dates, domains, periodLabel }
 }
 
 async function sendHistoryEmail(transporter, config, recipients, history) {
-  const { html, text, dates, domains } = buildHistoryEmail(history)
+  const { html, text, dates, domains, periodLabel } = buildHistoryEmail(history)
   if (!dates.length || !domains.length) throw new Error('No score history is available to send.')
   const workbook = await buildHistoryWorkbook(history)
   return transporter.sendMail({
     from: `STC Website Benchmark <${config.user}>`, to: recipients,
-    subject: `Website Score History Report — ${dates.length} scan dates`,
+    subject: `Website Score History Report — ${periodLabel}`,
     text, html,
     attachments: [{
       filename: `website-benchmark-history-${new Date().toISOString().slice(0, 10)}.xlsx`,
@@ -762,12 +776,12 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
   const persistState = () => writeJson(stateFile, state)
   const persistSettings = () => writeJson(settingsFile, settings)
 
-  async function deliverHistoryReport(recipients, trigger) {
-    if (!Array.isArray(state.history) || !state.history.length) throw new Error('No score history is available to send.')
+  async function deliverHistoryReport(recipients, trigger, selectedHistory = state.history) {
+    if (!Array.isArray(selectedHistory) || !selectedHistory.length) throw new Error('No score history is available to send.')
     if (!recipients.length) throw new Error('No saved recipients.')
     if (!transporter) throw new Error('Gmail is not configured.')
     await transporter.verify()
-    await sendHistoryEmail(transporter, emailConfig, recipients, state.history)
+    await sendHistoryEmail(transporter, emailConfig, recipients, selectedHistory)
     state.historyEmailStatus = { status: 'sent', trigger, sentAt: new Date().toISOString(), recipients: recipients.length }
     await persistState()
   }
@@ -928,6 +942,7 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
       return res.end(JSON.stringify({
         status: initialized ? 'ok' : 'starting', runtime: 'node', initialized,
         pageSpeedConfigured: Boolean(apiKey), emailConfigured: Boolean(transporter),
+        authConfigured: deploymentConfig.authConfigured === true,
         schedulerEnabled: true, persistence: initialized ? 'writable' : 'pending',
         historyCount: state.history?.length || 0,
         error: initializationError
@@ -991,7 +1006,8 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
         res.statusCode = 409
         return res.end(JSON.stringify({ error: 'A full score check is already running.' }))
       }
-      runAutomation('manual').catch(() => {})
+      const canSendEmail = req.benchmarkUser?.role === 'admin' || req.benchmarkPermissions?.canSendEmail === true
+      runAutomation(canSendEmail ? 'manual' : 'manual-no-email').catch(() => {})
       res.statusCode = 202
       return res.end(JSON.stringify({ started: true }))
     }
@@ -1006,10 +1022,12 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
         const parsed = JSON.parse(body || '{}')
         const recipients = String(parsed.recipient || '').split(',').map(value => value.trim()).filter(Boolean)
         if (!recipients.length || recipients.some(value => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value))) throw new Error('Enter valid recipient email addresses.')
-        await deliverHistoryReport(recipients, 'manual')
-        return res.end(JSON.stringify({ sent: true, reportType: 'history', recipients }))
+        const selectedHistory = filterHistoryByDateRange(state.history || [], parsed.dateFrom, parsed.dateTo)
+        if (!selectedHistory.length) throw new Error('No score history is available in the selected date range.')
+        await deliverHistoryReport(recipients, 'manual', selectedHistory)
+        return res.end(JSON.stringify({ sent: true, reportType: 'history', recipients, dateFrom: parsed.dateFrom || null, dateTo: parsed.dateTo || null, records: selectedHistory.length }))
       } catch (error) {
-        res.statusCode = /valid recipient|too large/i.test(error.message || '') ? 400 : /not configured|No score history/i.test(error.message || '') ? 503 : 500
+        res.statusCode = /valid recipient|too large|From date/i.test(error.message || '') ? 400 : /not configured/i.test(error.message || '') ? 503 : /No score history/i.test(error.message || '') ? 404 : 500
         const authError = ['EAUTH', '535'].some(code => String(error.code || error.responseCode || '').includes(code))
         return res.end(JSON.stringify({ error: authError ? 'Gmail rejected the App Password. Generate a new App Password and update .env.local.' : cleanText(error.message) || 'Score History Report delivery failed.' }))
       }
@@ -1052,21 +1070,32 @@ function publicSnapshotPlugin() {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const emailConfig = { user: env.SMTP_USER, password: env.SMTP_APP_PASSWORD }
+  const accessConfig = {
+    adminEmail: env.ADMIN_EMAIL || env.SMTP_USER,
+    adminUsername: env.ADMIN_USERNAME || 'admin',
+    adminPassword: env.ADMIN_PASSWORD,
+    publicAppUrl: env.PUBLIC_APP_URL,
+    notificationsEnabled: String(env.ACCESS_EMAIL_NOTIFICATIONS || 'true').toLowerCase() !== 'false',
+    smtpUser: env.SMTP_USER,
+    smtpPassword: env.SMTP_APP_PASSWORD
+  }
   const deploymentConfig = {
     recipients: [...new Set(String(env.EMAIL_RECIPIENTS || '').split(',').map(value => value.trim().toLowerCase()).filter(value => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)))],
     time: /^([01]\d|2[0-3]):([0-5]\d)$/.test(env.REPORT_TIME || '') ? env.REPORT_TIME : '15:00',
-    autoSendAfterCheck: String(env.AUTO_SEND_AFTER_CHECK || 'true').toLowerCase() === 'true'
+    autoSendAfterCheck: String(env.AUTO_SEND_AFTER_CHECK || 'true').toLowerCase() === 'true',
+    authConfigured: Boolean(env.ADMIN_PASSWORD && (env.ADMIN_EMAIL || env.SMTP_USER))
   }
   return {
     preview: {
       allowedHosts: ['bench.stcdigitalhub.com']
     },
     plugins: [
+      authPlugin(accessConfig),
       react(),
       pageSpeedPlugin(env.GOOGLE_PAGESPEED_API_KEY),
       emailReportPlugin(emailConfig),
       automationPlugin(env.GOOGLE_PAGESPEED_API_KEY, emailConfig, deploymentConfig),
-      publicSnapshotPlugin()
+      ...(String(env.STATIC_SNAPSHOT_EXPORT || '').toLowerCase() === 'true' ? [publicSnapshotPlugin()] : [])
     ]
   }
 })

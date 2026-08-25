@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle, CalendarClock, Check, Clock3, Download, FileText, Gauge, Globe2,
-  History, Mail, Monitor, Plus, RefreshCw, Search, Send, ShieldCheck, Smartphone, Sparkles, Trash2, UserPlus
+  History, LockKeyhole, LogOut, Mail, Monitor, Plus, RefreshCw, Search, Send, ShieldCheck, Smartphone, Sparkles, Trash2, UserCheck, UserPlus, Users, XCircle
 } from 'lucide-react'
 
 const metrics = [
@@ -97,14 +97,101 @@ function loadEmailRecipients() {
 
 async function fetchWithStaticFallback(apiPath, staticPath) {
   const response = await fetch(apiPath, { cache: 'no-store' })
+  if (response.status === 401 || response.status === 403) return response
   return response.ok ? response : fetch(staticPath, { cache: 'no-store' })
 }
 
-function App() {
+function LoginScreen({ onAuthenticated }) {
+  const setupToken = new URLSearchParams(window.location.search).get('setup') || ''
+  const [mode, setMode] = useState(setupToken ? 'setup' : 'login')
+  const [loading, setLoading] = useState(false)
+  const [message, setMessage] = useState('')
+  const [login, setLogin] = useState({ identifier: '', password: '' })
+  const [request, setRequest] = useState({ username: '', mobile: '', department: '', email: '' })
+  const [password, setPassword] = useState('')
+
+  async function submit(path, body) {
+    setLoading(true); setMessage('')
+    try {
+      const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(result.error || 'Request failed')
+      return result
+    } catch (error) { setMessage(error.message || 'Request failed'); return null }
+    finally { setLoading(false) }
+  }
+
+  async function signIn(event) {
+    event.preventDefault()
+    const result = await submit('/api/auth/login', login)
+    if (result?.user) onAuthenticated(result)
+  }
+
+  async function requestAccess(event) {
+    event.preventDefault()
+    const result = await submit('/api/auth/request-access', request)
+    if (result?.submitted) {
+      setMessage('Access request submitted. An Admin will review it and you will receive an email after approval.')
+      setRequest({ username: '', mobile: '', department: '', email: '' })
+    }
+  }
+
+  async function setupPassword(event) {
+    event.preventDefault()
+    const result = await submit('/api/auth/setup-password', { token: setupToken, password })
+    if (result?.user) {
+      window.history.replaceState({}, '', window.location.pathname)
+      onAuthenticated(result)
+    }
+  }
+
+  return <div className="auth-shell"><section className="auth-brand-panel"><div className="auth-logo">stc</div><span>Website Benchmark</span><h1>Secure digital intelligence for STC teams.</h1><p>Compare performance, review audit findings, manage score history, and distribute approved reports from one access-controlled workspace.</p><div><LockKeyhole size={18}/><strong>Role-based access</strong><small>Every dashboard and action is protected by Admin-assigned permissions.</small></div></section><section className="auth-card"><div className="auth-card-head"><span>{mode === 'request' ? 'Access request' : mode === 'setup' ? 'Account activation' : 'Secure sign in'}</span><h2>{mode === 'request' ? 'Request dashboard access' : mode === 'setup' ? 'Create your password' : 'Welcome back'}</h2><p>{mode === 'request' ? 'Submit your STC details for Admin review.' : mode === 'setup' ? 'Use at least 10 characters. Your invitation can only be used once.' : 'Use your username or STC email and password.'}</p></div>{mode === 'login' && <form onSubmit={signIn}><label><span>Username or STC email</span><input required autoComplete="username" value={login.identifier} onChange={event => setLogin({ ...login, identifier: event.target.value })}/></label><label><span>Password</span><input required type="password" autoComplete="current-password" value={login.password} onChange={event => setLogin({ ...login, password: event.target.value })}/></label><button disabled={loading}><LockKeyhole size={16}/>{loading ? 'Signing in…' : 'Sign in'}</button><button type="button" className="auth-link" onClick={() => { setMode('request'); setMessage('') }}>Request Access</button></form>}{mode === 'request' && <form onSubmit={requestAccess}><label><span>Username</span><input required value={request.username} onChange={event => setRequest({ ...request, username: event.target.value })}/></label><label><span>Mobile number</span><input required inputMode="tel" value={request.mobile} onChange={event => setRequest({ ...request, mobile: event.target.value })}/></label><label><span>Department</span><input required value={request.department} onChange={event => setRequest({ ...request, department: event.target.value })}/></label><label><span>STC email ID</span><input required type="email" placeholder="name@stc.com.kw" value={request.email} onChange={event => setRequest({ ...request, email: event.target.value })}/></label><button disabled={loading}><Send size={16}/>{loading ? 'Submitting…' : 'Submit request'}</button><button type="button" className="auth-link" onClick={() => { setMode('login'); setMessage('') }}>Back to sign in</button></form>}{mode === 'setup' && <form onSubmit={setupPassword}><label><span>New password</span><input required minLength="10" type="password" autoComplete="new-password" value={password} onChange={event => setPassword(event.target.value)}/></label><button disabled={loading}><UserCheck size={16}/>{loading ? 'Activating…' : 'Activate account'}</button></form>}{message && <div className={`auth-message ${/submitted/i.test(message) ? 'success' : ''}`}>{message}</div>}</section></div>
+}
+
+function AdminAccessScreen() {
+  const [data, setData] = useState({ requests: [], users: [], loading: true })
+  const [notice, setNotice] = useState('')
+  const sections = [['overview', 'Benchmark overview'], ['history', 'Score history'], ['findings', 'Audit findings'], ['emails', 'Emails to send']]
+
+  async function refresh() {
+    const response = await fetch('/api/admin/access', { cache: 'no-store' })
+    const result = await response.json().catch(() => ({}))
+    setData({ requests: result.requests || [], users: result.users || [], loading: false })
+  }
+  useEffect(() => { refresh().catch(() => setData(current => ({ ...current, loading: false }))) }, [])
+
+  async function decide(request, decision) {
+    const response = await fetch(`/api/admin/access-requests/${request.id}/decision`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision, role: 'user', sections: ['overview', 'history', 'findings'], canSendEmail: false, canDownload: true }) })
+    const result = await response.json().catch(() => ({}))
+    setNotice(response.ok ? decision === 'approve' ? `Approved ${request.username}. ${result.invitationSent ? 'Invitation email sent.' : 'Invitation saved but email delivery failed.'}` : `Rejected ${request.username}.` : result.error || 'Unable to update request')
+    if (response.ok) await refresh()
+  }
+
+  async function updateUser(user, changes) {
+    const response = await fetch(`/api/admin/users/${user.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role: user.role, status: user.status, sections: user.sections, canSendEmail: user.canSendEmail, canDownload: user.canDownload, ...changes }) })
+    const result = await response.json().catch(() => ({}))
+    setNotice(response.ok ? `Permissions updated for ${user.username}.` : result.error || 'Unable to update permissions')
+    if (response.ok) await refresh()
+  }
+
+  async function resendInvitation(user) {
+    const response = await fetch(`/api/admin/users/${user.id}`, { method: 'POST' })
+    const result = await response.json().catch(() => ({}))
+    setNotice(response.ok ? `A new invitation was sent to ${user.email}.` : result.error || 'Unable to resend invitation')
+    if (response.ok) await refresh()
+  }
+
+  const pending = data.requests.filter(request => request.status === 'pending')
+  return <div className="admin-access"><section className="admin-hero"><div><span>Administration</span><h1>Access management</h1><p>Approve requests, assign roles, and control dashboard, email, and download permissions.</p></div><div><strong>{pending.length}</strong><span>Pending requests</span></div><div><strong>{data.users.length}</strong><span>Managed users</span></div></section>{notice && <div className="admin-notice">{notice}</div>}<section className="admin-panel"><div className="admin-panel-head"><div><span>Access requests</span><h2>Pending Admin review</h2></div><button onClick={refresh}><RefreshCw size={14}/>Refresh</button></div>{data.loading ? <div className="admin-empty">Loading access requests…</div> : pending.length ? <div className="request-table"><div className="request-row head"><span>User</span><span>Department</span><span>Contact</span><span>Requested</span><span>Decision</span></div>{pending.map(request => <div className="request-row" key={request.id}><span><strong>{request.username}</strong><small>{request.email}</small></span><span>{request.department}</span><span>{request.mobile}</span><span>{checkedTime(request.requestedAt)}</span><span className="request-actions"><button className="approve" onClick={() => decide(request, 'approve')}><UserCheck size={14}/>Approve</button><button className="reject" onClick={() => decide(request, 'reject')}><XCircle size={14}/>Reject</button></span></div>)}</div> : <div className="admin-empty"><UserCheck size={24}/><strong>No pending requests</strong><span>New requests will appear here and notify the Admin by email.</span></div>}{data.requests.some(request => request.status !== 'pending') && <div className="request-history"><strong>Request history</strong>{data.requests.filter(request => request.status !== 'pending').map(request => <div key={request.id}><span><b>{request.username}</b><small>{request.email}</small></span><em className={request.status}>{request.status}</em><time>{checkedTime(request.reviewedAt)}</time></div>)}</div>}</section><section className="admin-panel"><div className="admin-panel-head"><div><span>User permissions</span><h2>Roles and feature access</h2></div></div><div className="user-permissions">{data.users.map(user => <article key={user.id}><header><div><span>{user.username.slice(0, 1).toUpperCase()}</span><div><strong>{user.username}</strong><small>{user.email} · {user.department || 'Administration'}</small></div></div><label>Role<select value={user.role} onChange={event => updateUser(user, { role: event.target.value })}><option value="user">User</option><option value="admin">Admin</option></select></label><label>Status<select value={user.status} onChange={event => updateUser(user, { status: event.target.value })}><option value="active">Active</option><option value="invited">Invited</option><option value="disabled">Disabled</option></select></label>{user.status === 'invited' && <button className="resend-invite" onClick={() => resendInvitation(user)}><Send size={13}/>Resend invite</button>}</header><div className="permission-grid"><div><span>Dashboard sections</span>{sections.map(([key, label]) => <label key={key}><input type="checkbox" checked={user.role === 'admin' || user.sections?.includes(key)} disabled={user.role === 'admin'} onChange={event => updateUser(user, { sections: event.target.checked ? [...new Set([...(user.sections || []), key])] : (user.sections || []).filter(section => section !== key) })}/>{label}</label>)}</div><div><span>Feature permissions</span><label><input type="checkbox" checked={user.role === 'admin' || user.canSendEmail} disabled={user.role === 'admin'} onChange={event => updateUser(user, { canSendEmail: event.target.checked })}/>Send email reports</label><label><input type="checkbox" checked={user.role === 'admin' || user.canDownload} disabled={user.role === 'admin'} onChange={event => updateUser(user, { canDownload: event.target.checked })}/>Download Excel/PDF reports</label></div></div></article>)}</div></section></div>
+}
+
+function DashboardApp({ currentUser, permissions, onLogout }) {
+  const allowedSections = permissions?.sections || []
+  const initialView = ['overview', 'history', 'findings', 'emails', 'admin'].find(section => allowedSections.includes(section)) || 'overview'
   const [sites, setSites] = useState(() => loadSaved('webpulse-live-sites-v1'))
   const [issues, setIssues] = useState(() => loadSaved('webpulse-live-issues-v1'))
   const [url, setUrl] = useState('')
-  const [view, setView] = useState('overview')
+  const [view, setView] = useState(initialView)
   const [selectedSite, setSelectedSite] = useState('')
   const [severity, setSeverity] = useState('All')
   const [issueSite, setIssueSite] = useState('All')
@@ -118,6 +205,8 @@ function App() {
   const [emailTime, setEmailTime] = useState(() => localStorage.getItem('benchmark-email-time') || '09:00')
   const [emailDay, setEmailDay] = useState(() => localStorage.getItem('benchmark-email-day') || 'Sunday')
   const [emailReportType, setEmailReportType] = useState(() => localStorage.getItem('benchmark-email-report-type') || 'benchmark')
+  const [historyEmailFrom, setHistoryEmailFrom] = useState(() => localStorage.getItem('benchmark-history-email-from') || '')
+  const [historyEmailTo, setHistoryEmailTo] = useState(() => localStorage.getItem('benchmark-history-email-to') || '')
   const [emailEnabled, setEmailEnabled] = useState(() => localStorage.getItem('benchmark-email-enabled') === 'true')
   const [autoSendAfterCheck, setAutoSendAfterCheck] = useState(() => localStorage.getItem('benchmark-auto-send-after-check') === 'true')
   const [emailStatus, setEmailStatus] = useState({ configured: false, sender: null, loading: true })
@@ -165,7 +254,19 @@ function App() {
     if (!current || new Date(record.checkedAt) > new Date(current.checkedAt)) historyLookup.set(key, record)
   })
   const historyDates = [...new Set(history.map(record => kuwaitDateKey(record.checkedAt)))].sort()
-  const recentHistoryDates = [...historyDates].reverse().slice(0, 3)
+  const historyEmailRecords = history.filter(record => {
+    const date = kuwaitDateKey(record.checkedAt)
+    return (!historyEmailFrom || date >= historyEmailFrom) && (!historyEmailTo || date <= historyEmailTo)
+  })
+  const historyEmailDates = [...new Set(historyEmailRecords.map(record => kuwaitDateKey(record.checkedAt)))].sort()
+  const historyEmailSites = [...new Set(historyEmailRecords.map(record => record.domain))]
+  const historyEmailLatest = [...historyEmailRecords].sort((a, b) => new Date(b.checkedAt) - new Date(a.checkedAt))[0]
+  const historyEmailLookup = new Map()
+  historyEmailRecords.forEach(record => {
+    const key = `${kuwaitDateKey(record.checkedAt)}|${record.domain}|${record.device}`
+    const current = historyEmailLookup.get(key)
+    if (!current || new Date(record.checkedAt) > new Date(current.checkedAt)) historyEmailLookup.set(key, record)
+  })
 
   useEffect(() => localStorage.setItem('webpulse-live-sites-v1', JSON.stringify(sites)), [sites])
   useEffect(() => localStorage.setItem('webpulse-live-issues-v1', JSON.stringify(issues)), [issues])
@@ -307,6 +408,7 @@ function App() {
   }
 
   function downloadCsv() {
+    if (!permissions.canDownload) return notify('You do not have permission to download reports')
     if (!sites.length) return notify('No benchmark results to export')
     const deviceHeaders = metrics.flatMap(([, label]) => [`Mobile ${label}`, `Web ${label}`])
     const head = ['Website', 'Overall', ...deviceHeaders, 'Issues', 'Scan date']
@@ -326,6 +428,7 @@ function App() {
   }
 
   async function downloadHistoryExcel() {
+    if (!permissions.canDownload) return notify('You do not have permission to download reports')
     try {
       let response = await fetch('/api/history.xlsx', { cache: 'no-store' })
       let blob = response.ok ? await response.blob() : null
@@ -351,16 +454,19 @@ function App() {
   }
 
   async function sendEmailReport(recipient = emailRecipients.join(','), automatic = false, reportType = emailReportType) {
+    if (!permissions.canSendEmail) return notify('You do not have permission to send email reports')
     if (!emailStatus.configured) return notify('Gmail is not connected on the server')
     const recipients = String(recipient).split(',').map(value => value.trim()).filter(Boolean)
     if (!recipients.length || recipients.some(value => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value))) return notify('Add at least one valid recipient email address')
     if (reportType === 'history' && !history.length) return notify('No Score History Report is available yet')
+    if (reportType === 'history' && historyEmailFrom && historyEmailTo && historyEmailFrom > historyEmailTo) return notify('The From date must be before the To date')
+    if (reportType === 'history' && !historyEmailRecords.length) return notify('No score history is available in the selected date range')
     if (reportType === 'benchmark' && !comparisonSitesRef.current.length) return notify('Run at least one website scan first')
     setEmailSending(true)
     try {
       const response = await fetch(reportType === 'history' ? '/api/history-email-report' : '/api/email-report', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(reportType === 'history' ? { recipient } : { recipient,
+        body: JSON.stringify(reportType === 'history' ? { recipient, dateFrom: historyEmailFrom, dateTo: historyEmailTo } : { recipient,
           sites: comparisonSitesRef.current.map(site => ({
             domain: site.domain, overall: site.overall,
             deviceScores: {
@@ -399,6 +505,7 @@ function App() {
   }
 
   async function toggleAutoSendAfterCheck() {
+    if (!permissions.canSendEmail) return notify('You do not have permission to change email delivery')
     if (automation.status === 'running') return
     const next = !autoSendAfterCheck
     setAutoSendAfterCheck(next)
@@ -426,6 +533,7 @@ function App() {
   }
 
   function saveEmailDelivery() {
+    if (!permissions.canSendEmail) return notify('You do not have permission to change email delivery')
     const recipients = [...emailRecipients]
     if (emailRecipient.trim()) {
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailRecipient.trim())) return notify('Enter a valid recipient email address')
@@ -453,7 +561,18 @@ function App() {
     persistEmailSettings(emailRecipients, { reportType: next, monthlyHistoryEnabled: true })
   }
 
+  function updateHistoryEmailRange(type, value) {
+    if (type === 'from') {
+      setHistoryEmailFrom(value)
+      localStorage.setItem('benchmark-history-email-from', value)
+    } else {
+      setHistoryEmailTo(value)
+      localStorage.setItem('benchmark-history-email-to', value)
+    }
+  }
+
   function addEmailRecipient() {
+    if (!permissions.canSendEmail) return notify('You do not have permission to manage recipients')
     const value = emailRecipient.trim().toLowerCase()
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return notify('Enter a valid recipient email address')
     if (emailRecipients.includes(value)) return notify('This email address is already saved')
@@ -466,6 +585,7 @@ function App() {
   }
 
   function removeEmailRecipient(value) {
+    if (!permissions.canSendEmail) return notify('You do not have permission to manage recipients')
     const next = emailRecipients.filter(item => item !== value)
     setEmailRecipients(next)
     localStorage.setItem('benchmark-email-recipients', JSON.stringify(next))
@@ -478,13 +598,16 @@ function App() {
   }
 
   function openGmailDraft() {
+    if (!permissions.canSendEmail) return notify('You do not have permission to send email reports')
     const recipients = [...emailRecipients]
     if (emailRecipient.trim() && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailRecipient.trim())) recipients.push(emailRecipient.trim())
     if (!recipients.length) return notify('Add at least one recipient email address')
     if (emailReportType === 'history') {
       if (!history.length) return notify('No Score History Report is available yet')
-      const summary = recentHistoryDates.map(dateKey => `${historyDateLabel(dateKey)}\n${historyDomains.map(domain => ['Mobile', 'Web'].map(device => {
-        const record = historyLookup.get(`${dateKey}|${domain}|${device}`)
+      if (historyEmailFrom && historyEmailTo && historyEmailFrom > historyEmailTo) return notify('The From date must be before the To date')
+      if (!historyEmailRecords.length) return notify('No score history is available in the selected date range')
+      const summary = historyEmailDates.map(dateKey => `${historyDateLabel(dateKey)}\n${historyDomains.map(domain => ['Mobile', 'Web'].map(device => {
+        const record = historyEmailLookup.get(`${dateKey}|${domain}|${device}`)
         return `${domain} ${device === 'Web' ? 'Desktop' : device}: ${historyMetrics.map(([label, key]) => `${label} ${record?.[key] ?? 'N/A'}`).join(' | ')}`
       }).join('\n')).join('\n')}`).join('\n\n')
       const composeUrl = `https://mail.google.com/mail/?view=cm&fs=1&tf=1&to=${encodeURIComponent([...new Set(recipients)].join(','))}&su=${encodeURIComponent('Website Score History Report')}&body=${encodeURIComponent(`Website Score History Report\n\n${summary}`)}`
@@ -509,21 +632,24 @@ function App() {
       <div className="sidebar-brand"><span className="brand-mark">stc</span><div><strong>Website benchmark</strong><span>Competitor intelligence</span></div></div>
       <div className="sidebar-label">Dashboard</div>
       <nav aria-label="Dashboard screens">
-        <button className={view === 'overview' ? 'active' : ''} onClick={() => setView('overview')}><Gauge size={18}/><span>Benchmark overview</span></button>
-        <button className={view === 'history' ? 'active' : ''} onClick={() => setView('history')}><History size={18}/><span>Score history</span><b>{history.length}</b></button>
-        <button className={view === 'findings' ? 'active' : ''} onClick={() => setView('findings')}><AlertTriangle size={18}/><span>Audit findings</span><b>{issues.length}</b></button>
-        <button className={view === 'emails' ? 'active' : ''} onClick={() => setView('emails')}><Mail size={18}/><span>Emails to send</span></button>
+        {allowedSections.includes('overview') && <button className={view === 'overview' ? 'active' : ''} onClick={() => setView('overview')}><Gauge size={18}/><span>Benchmark overview</span></button>}
+        {allowedSections.includes('history') && <button className={view === 'history' ? 'active' : ''} onClick={() => setView('history')}><History size={18}/><span>Score history</span><b>{history.length}</b></button>}
+        {allowedSections.includes('findings') && <button className={view === 'findings' ? 'active' : ''} onClick={() => setView('findings')}><AlertTriangle size={18}/><span>Audit findings</span><b>{issues.length}</b></button>}
+        {allowedSections.includes('emails') && <button className={view === 'emails' ? 'active' : ''} onClick={() => setView('emails')}><Mail size={18}/><span>Emails to send</span></button>}
+        {allowedSections.includes('admin') && <button className={view === 'admin' ? 'active' : ''} onClick={() => setView('admin')}><Users size={18}/><span>Access management</span></button>}
       </nav>
+      <div className="sidebar-account"><i>{currentUser.username.slice(0, 1).toUpperCase()}</i><span><strong>{currentUser.username}</strong><small>{currentUser.role === 'admin' ? 'Administrator' : 'Dashboard user'}</small></span><button onClick={onLogout} title="Sign out"><LogOut size={15}/></button></div>
       <div className="sidebar-source"><i></i><span><strong>Google PageSpeed</strong><small>{automation.hostingMode === 'static-snapshot' ? 'Saved audit snapshot' : 'Live audit source'}</small></span></div>
     </aside>
 
     <div className="dashboard-body">
     <header className="matrix-topbar">
-      <div className="page-context"><span>STC Kuwait digital intelligence</span><strong>{view === 'overview' ? 'Benchmark overview' : view === 'history' ? 'Score history' : view === 'findings' ? 'Audit findings' : 'Emails to send'}</strong></div>
+      <div className="page-context"><span>STC Kuwait digital intelligence</span><strong>{view === 'overview' ? 'Benchmark overview' : view === 'history' ? 'Score history' : view === 'findings' ? 'Audit findings' : view === 'admin' ? 'Access management' : 'Emails to send'}</strong></div>
       <div className="top-status"><i></i>{automation.hostingMode === 'static-snapshot' ? 'Saved PageSpeed data' : 'Google PageSpeed live'}</div>
       <div className="report-actions">
-        <button onClick={downloadHistoryExcel}><Download size={16}/>Excel history</button>
-        <button className="primary" onClick={() => sites.length ? window.print() : notify('No benchmark results to export')}><FileText size={16}/>PDF report</button>
+        {permissions.canDownload && <button onClick={downloadHistoryExcel}><Download size={16}/>Excel history</button>}
+        {permissions.canDownload && <button className="primary" onClick={() => sites.length ? window.print() : notify('No benchmark results to export')}><FileText size={16}/>PDF report</button>}
+        <button className="account-logout" onClick={onLogout}><LogOut size={15}/>Sign out</button>
       </div>
     </header>
 
@@ -532,7 +658,7 @@ function App() {
       <section className="standard-monitor">
         <div className="standard-monitor-head">
           <div><span>Automated standard monitoring</span><h1>Six websites. One complete score check.</h1><p>All Mobile and Web values are validated before the dashboard is updated or the email is sent.</p></div>
-          <div className="automation-actions"><span className="next-run">Next automatic run<strong>{checkedTime(automation.nextRunAt)}</strong></span><label className={`auto-send-toggle ${autoSendAfterCheck ? 'enabled' : ''}`} title={autoSendAfterCheck ? 'The completed report will be emailed to all saved recipients' : 'The completed report will wait for manual review'}><input type="checkbox" checked={autoSendAfterCheck} onChange={toggleAutoSendAfterCheck} disabled={automation.status === 'running'}/><span aria-hidden="true"><i></i></span><b>Auto-Send Email<small>{autoSendAfterCheck ? 'Enabled' : 'Disabled'}</small></b></label><button onClick={runStandardCheck} disabled={automation.status === 'running'}>{automation.status === 'running' ? <RefreshCw className="spin" size={17}/> : <Gauge size={17}/>} {automation.status === 'running' ? `Checking ${automation.progress?.filter(item => item.status === 'complete').length || 0}/6` : 'Check Score Now'}</button></div>
+          <div className="automation-actions"><span className="next-run">Next automatic run<strong>{checkedTime(automation.nextRunAt)}</strong></span>{permissions.canSendEmail && <label className={`auto-send-toggle ${autoSendAfterCheck ? 'enabled' : ''}`} title={autoSendAfterCheck ? 'The completed report will be emailed to all saved recipients' : 'The completed report will wait for manual review'}><input type="checkbox" checked={autoSendAfterCheck} onChange={toggleAutoSendAfterCheck} disabled={automation.status === 'running'}/><span aria-hidden="true"><i></i></span><b>Auto-Send Email<small>{autoSendAfterCheck ? 'Enabled' : 'Disabled'}</small></b></label>}<button onClick={runStandardCheck} disabled={automation.status === 'running'}>{automation.status === 'running' ? <RefreshCw className="spin" size={17}/> : <Gauge size={17}/>} {automation.status === 'running' ? `Checking ${automation.progress?.filter(item => item.status === 'complete').length || 0}/6` : 'Check Score Now'}</button></div>
         </div>
         <div className={`automation-status ${automation.status || 'idle'}`}>
           {automation.status === 'running' ? <RefreshCw className="spin" size={15}/> : automation.status === 'failed' ? <AlertTriangle size={15}/> : <Check size={15}/>}
@@ -603,7 +729,7 @@ function App() {
       <div className={`view-screen history-screen ${view === 'history' ? 'active' : ''}`}>
         <section className="history-hero">
           <div><span>Long-term score tracking</span><h1>Website score history</h1><p>Review every completed Mobile and Web PageSpeed snapshot and download the complete Excel workbook whenever required.</p></div>
-          <button onClick={downloadHistoryExcel}><Download size={16}/>Download Excel history</button>
+          {permissions.canDownload && <button onClick={downloadHistoryExcel}><Download size={16}/>Download Excel history</button>}
         </section>
 
         <section className="history-kpis">
@@ -637,7 +763,7 @@ function App() {
       <div className={`view-screen findings-screen ${view === 'findings' ? 'active' : ''}`}>
       <section className="findings-hero">
         <div><span>Technical audit command center</span><h1>Audit findings</h1><p>Prioritize every issue across your website and competitors, then move from diagnosis to recommended action.</p></div>
-        <div className="findings-hero-actions"><button onClick={() => setView('overview')}><Gauge size={16}/>View scores</button><button className="primary" onClick={downloadCsv}><Download size={16}/>Export findings</button></div>
+        <div className="findings-hero-actions">{allowedSections.includes('overview') && <button onClick={() => setView('overview')}><Gauge size={16}/>View scores</button>}{permissions.canDownload && <button className="primary" onClick={downloadCsv}><Download size={16}/>Export findings</button>}</div>
       </section>
 
       <section className="finding-kpis">
@@ -689,27 +815,53 @@ function App() {
         <section className="email-layout">
           <article className="email-setup-card">
             <div className="email-card-head"><span>Delivery setup</span><h2>Report recipient and schedule</h2><p>Select a report for manual sending. Monthly history delivery uses the same saved recipient list.</p></div>
-            <div className="recipient-manager"><span>Business email recipients</span><div className="recipient-entry"><div><Mail size={16}/><input type="email" value={emailRecipient} onChange={event => setEmailRecipient(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addEmailRecipient() } }} placeholder="name@company.com"/></div><button onClick={addEmailRecipient}><UserPlus size={15}/>Add</button></div>
-              <div className="saved-recipients"><div><strong>Saved email addresses</strong><small>{emailRecipients.length} recipient{emailRecipients.length === 1 ? '' : 's'}</small></div>{emailRecipients.length ? emailRecipients.map(recipient => <div className="recipient-row" key={recipient}><i><Mail size={13}/></i><span>{recipient}</span><button onClick={() => removeEmailRecipient(recipient)} title={`Remove ${recipient}`}><Trash2 size={14}/></button></div>) : <p>No saved recipients yet.</p>}</div>
+            {!permissions.canSendEmail && <div className="permission-notice"><LockKeyhole size={15}/><span><strong>View-only email access</strong><small>An Admin must grant email permission before you can manage recipients, schedules, or send reports.</small></span></div>}
+            <div className="recipient-manager"><span>Business email recipients</span><div className="recipient-entry"><div><Mail size={16}/><input disabled={!permissions.canSendEmail} type="email" value={emailRecipient} onChange={event => setEmailRecipient(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addEmailRecipient() } }} placeholder="name@company.com"/></div><button disabled={!permissions.canSendEmail} onClick={addEmailRecipient}><UserPlus size={15}/>Add</button></div>
+              <div className="saved-recipients"><div><strong>Saved email addresses</strong><small>{emailRecipients.length} recipient{emailRecipients.length === 1 ? '' : 's'}</small></div>{emailRecipients.length ? emailRecipients.map(recipient => <div className="recipient-row" key={recipient}><i><Mail size={13}/></i><span>{recipient}</span><button disabled={!permissions.canSendEmail} onClick={() => removeEmailRecipient(recipient)} title={`Remove ${recipient}`}><Trash2 size={14}/></button></div>) : <p>No saved recipients yet.</p>}</div>
             </div>
-            <div className="schedule-settings"><label className="report-type-setting"><span>Select Report Type</span><div><FileText size={16}/><select aria-label="Select Report Type" value={emailReportType} onChange={event => selectEmailReportType(event.target.value)}><option value="benchmark">Benchmark Report</option><option value="history">Score History Report</option></select></div></label><label><span>Benchmark schedule</span><div><CalendarClock size={16}/><strong>Daily complete report</strong></div></label><label><span>History schedule</span><div><History size={16}/><strong>First working day monthly</strong></div></label><label><span>Send time</span><div><Clock3 size={16}/><input type="time" value={emailTime} onChange={event => { setEmailTime(event.target.value); setEmailSchedule('Daily summary') }}/></div></label><small className="timezone-note">Sunday–Thursday working week · Asia/Kuwait timezone. Next monthly history report: {checkedTime(automation.nextHistoryEmailAt)}. The server must stay running.</small></div>
-            <div className="email-includes"><span>{emailReportType === 'history' ? 'Score History Report includes' : 'Benchmark Report includes'}</span><div>{emailReportType === 'history' ? <><b><Check size={13}/>All saved historical scan dates</b><b><Check size={13}/>Mobile + Desktop scores and audit sources</b></> : <><b><Check size={13}/>Overall website scores</b><b><Check size={13}/>Four Mobile + Web category scores</b></>}</div></div>
-            <div className="email-buttons">{emailStatus.verified ? <button className="connect-email secondary" onClick={() => sendEmailReport()} disabled={emailSending}><Send size={16}/>{emailSending ? 'Sending…' : 'Send Manually'}</button> : <button className="connect-email secondary" onClick={openGmailDraft}><Mail size={16}/>Open manual Gmail draft</button>}<button className="connect-email" onClick={saveEmailDelivery}><Check size={16}/>{emailEnabled ? 'Schedules saved' : 'Save preferences'}</button></div>
+            <div className="schedule-settings"><label className="report-type-setting"><span>Select Report Type</span><div><FileText size={16}/><select aria-label="Select Report Type" value={emailReportType} onChange={event => selectEmailReportType(event.target.value)}><option value="benchmark">Benchmark Report</option><option value="history">Score History Report</option></select></div></label>{emailReportType === 'history' && <div className="history-date-range"><span>History report date range</span><div><label><small>From</small><input aria-label="History report from date" type="date" min={historyDates[0] || ''} max={historyEmailTo || historyDates.at(-1) || ''} value={historyEmailFrom} onInput={event => updateHistoryEmailRange('from', event.currentTarget.value)}/></label><label><small>To</small><input aria-label="History report to date" type="date" min={historyEmailFrom || historyDates[0] || ''} max={historyDates.at(-1) || ''} value={historyEmailTo} onInput={event => updateHistoryEmailRange('to', event.currentTarget.value)}/></label><button type="button" onClick={() => { updateHistoryEmailRange('from', ''); updateHistoryEmailRange('to', '') }}>All dates</button></div><small>{historyEmailDates.length} scan date{historyEmailDates.length === 1 ? '' : 's'} selected · This range applies to manual email and its Excel attachment.</small></div>}<label><span>Benchmark schedule</span><div><CalendarClock size={16}/><strong>Daily complete report</strong></div></label><label><span>History schedule</span><div><History size={16}/><strong>First working day monthly</strong></div></label><label><span>Send time</span><div><Clock3 size={16}/><input type="time" value={emailTime} onChange={event => { setEmailTime(event.target.value); setEmailSchedule('Daily summary') }}/></div></label><small className="timezone-note">Sunday–Thursday working week · Asia/Kuwait timezone. Next monthly history report: {checkedTime(automation.nextHistoryEmailAt)}. The server must stay running.</small></div>
+            <div className="email-includes"><span>{emailReportType === 'history' ? 'Score History Report includes' : 'Benchmark Report includes'}</span><div>{emailReportType === 'history' ? <><b><Check size={13}/>Selected historical date range</b><b><Check size={13}/>Filtered Mobile + Desktop Excel attachment</b></> : <><b><Check size={13}/>Overall website scores</b><b><Check size={13}/>Four Mobile + Web category scores</b></>}</div></div>
+            <div className="email-buttons">{emailStatus.verified ? <button className="connect-email secondary" onClick={() => sendEmailReport()} disabled={emailSending || !permissions.canSendEmail}><Send size={16}/>{emailSending ? 'Sending…' : 'Send Manually'}</button> : <button className="connect-email secondary" disabled={!permissions.canSendEmail} onClick={openGmailDraft}><Mail size={16}/>Open manual Gmail draft</button>}<button className="connect-email" disabled={!permissions.canSendEmail} onClick={saveEmailDelivery}><Check size={16}/>{emailEnabled ? 'Schedules saved' : 'Save preferences'}</button></div>
           </article>
 
           <article className="email-preview-card">
-            <div className="email-card-head"><span>Email preview</span><h2>{emailReportType === 'history' ? 'Website Score History Report' : 'Mobile and Web benchmark matrix'}</h2><p>{emailReportType === 'history' ? 'The complete email follows the same STC report format and includes every saved date.' : 'The email contains this score comparison only.'}</p></div>
-            {emailReportType === 'history' ? (historyDates.length ? <div className="history-email-preview"><section className="history-kpis email-history-kpis"><div><span>History records</span><strong>{history.length}</strong><small>Mobile and Web rows</small></div><div><span>Websites tracked</span><strong>{historySites.length}</strong><small>Ordered competitor set</small></div><div><span>Mobile records</span><strong>{history.filter(record => record.device === 'Mobile').length}</strong><small>Google PageSpeed Mobile</small></div><div><span>Web records</span><strong>{history.filter(record => record.device === 'Web').length}</strong><small>Google PageSpeed Web</small></div><div><span>Latest history</span><strong className="history-latest">{checkedTime(history[0]?.checkedAt)}</strong><small>Asia/Kuwait time</small></div></section><div className="history-preview-heading"><span>Excel-style score archive</span><h3>Six-website history comparison</h3><p>Every saved date, Mobile and Desktop score, audit time, and source URL.</p></div><div className="history-matrix-scroll"><table className="history-sheet"><thead><tr className="history-domain-row"><th className="history-date-head" rowSpan="3">Date</th>{historyDomains.map(domain => <th colSpan={historyMetrics.length * 2 + 2} style={{'--history-domain-color':colorForDomain(domain)}} key={domain}><strong>{domain}</strong><small>{websiteLabels[domain] || domain}</small></th>)}</tr><tr className="history-device-row">{historyDomains.map(domain => <Fragment key={domain}><th colSpan={historyMetrics.length} style={{'--history-domain-color':colorForDomain(domain)}}><Smartphone size={12}/> Mobile</th><th colSpan={historyMetrics.length} style={{'--history-domain-color':colorForDomain(domain)}}><Monitor size={12}/> Desktop</th><th colSpan="2" style={{'--history-domain-color':colorForDomain(domain)}}>Audit details</th></Fragment>)}</tr><tr className="history-metric-row">{historyDomains.map(domain => <Fragment key={domain}>{['Mobile','Web'].flatMap(device => historyMetrics.map(([label]) => <th style={{'--history-domain-color':colorForDomain(domain)}} key={`${domain}-${device}-${label}`}>{label}</th>))}<th style={{'--history-domain-color':colorForDomain(domain)}}>Checked date &amp; time</th><th style={{'--history-domain-color':colorForDomain(domain)}}>Source URL</th></Fragment>)}</tr></thead><tbody>{historyDates.map(dateKey => <tr key={dateKey}><th className="history-date-cell">{historyDateLabel(dateKey)}</th>{historyDomains.map(domain => { const records = ['Mobile','Web'].map(device => historyLookup.get(`${dateKey}|${domain}|${device}`)).filter(Boolean); const auditRecord = [...records].sort((a,b) => new Date(b.checkedAt)-new Date(a.checkedAt))[0]; return <Fragment key={`${dateKey}-${domain}`}>{['Mobile','Web'].flatMap(device => { const record = historyLookup.get(`${dateKey}|${domain}|${device}`); return historyMetrics.map(([label,key]) => { const value=record?.[key]; return <td className={typeof value === 'number' ? `history-score ${scoreTone(value)}` : 'history-score missing'} title={`${domain} · ${device === 'Web' ? 'Desktop' : device} · ${label}`} key={`${dateKey}-${domain}-${device}-${key}`}>{typeof value === 'number' ? value : 'N/A'}</td> }) })}<td className="history-audit-cell">{auditRecord ? checkedTime(auditRecord.checkedAt) : 'N/A'}</td><td className="history-source-cell">{auditRecord?.url ? <a href={auditRecord.url} target="_blank" rel="noreferrer" title={auditRecord.url}>{auditRecord.url}</a> : 'N/A'}</td></Fragment> })}</tr>)}</tbody></table></div></div> : <div className="email-empty">Run a website scan to build the Score History Report.</div>) : (comparisonSites.length ? <div className="email-preview-groups">{comparisonGroups.map((group, groupIndex) => <div className="email-matrix-scroll" key={`email-group-${groupIndex}`}><div className="email-preview-group-label">Websites {groupIndex * 3 + 1}–{groupIndex * 3 + group.length}</div><div className="email-preview-matrix" style={{gridTemplateColumns:`125px repeat(${group.length}, minmax(180px,1fr))`}}>
+            <div className="email-card-head"><span>Email preview</span><h2>{emailReportType === 'history' ? 'Website Score History Report' : 'Mobile and Web benchmark matrix'}</h2><p>{emailReportType === 'history' ? 'The email preview and Excel attachment include only the selected date range.' : 'The email contains this score comparison only.'}</p></div>
+            {emailReportType === 'history' ? (historyEmailDates.length ? <div className="history-email-preview"><section className="history-kpis email-history-kpis"><div><span>History records</span><strong>{historyEmailRecords.length}</strong><small>Mobile and Web rows</small></div><div><span>Websites tracked</span><strong>{historyEmailSites.length}</strong><small>Selected period</small></div><div><span>Mobile records</span><strong>{historyEmailRecords.filter(record => record.device === 'Mobile').length}</strong><small>Google PageSpeed Mobile</small></div><div><span>Web records</span><strong>{historyEmailRecords.filter(record => record.device === 'Web').length}</strong><small>Google PageSpeed Web</small></div><div><span>Latest history</span><strong className="history-latest">{checkedTime(historyEmailLatest?.checkedAt)}</strong><small>Asia/Kuwait time</small></div></section><div className="history-preview-heading"><span>Excel-style score archive</span><h3>Six-website history comparison</h3><p>{historyEmailDates.length} selected scan date{historyEmailDates.length === 1 ? '' : 's'} · Mobile and Desktop scores, audit time, and source URL.</p></div><div className="history-matrix-scroll"><table className="history-sheet"><thead><tr className="history-domain-row"><th className="history-date-head" rowSpan="3">Date</th>{historyDomains.map(domain => <th colSpan={historyMetrics.length * 2 + 2} style={{'--history-domain-color':colorForDomain(domain)}} key={domain}><strong>{domain}</strong><small>{websiteLabels[domain] || domain}</small></th>)}</tr><tr className="history-device-row">{historyDomains.map(domain => <Fragment key={domain}><th colSpan={historyMetrics.length} style={{'--history-domain-color':colorForDomain(domain)}}><Smartphone size={12}/> Mobile</th><th colSpan={historyMetrics.length} style={{'--history-domain-color':colorForDomain(domain)}}><Monitor size={12}/> Desktop</th><th colSpan="2" style={{'--history-domain-color':colorForDomain(domain)}}>Audit details</th></Fragment>)}</tr><tr className="history-metric-row">{historyDomains.map(domain => <Fragment key={domain}>{['Mobile','Web'].flatMap(device => historyMetrics.map(([label]) => <th style={{'--history-domain-color':colorForDomain(domain)}} key={`${domain}-${device}-${label}`}>{label}</th>))}<th style={{'--history-domain-color':colorForDomain(domain)}}>Checked date &amp; time</th><th style={{'--history-domain-color':colorForDomain(domain)}}>Source URL</th></Fragment>)}</tr></thead><tbody>{historyEmailDates.map(dateKey => <tr key={dateKey}><th className="history-date-cell">{historyDateLabel(dateKey)}</th>{historyDomains.map(domain => { const records = ['Mobile','Web'].map(device => historyEmailLookup.get(`${dateKey}|${domain}|${device}`)).filter(Boolean); const auditRecord = [...records].sort((a,b) => new Date(b.checkedAt)-new Date(a.checkedAt))[0]; return <Fragment key={`${dateKey}-${domain}`}>{['Mobile','Web'].flatMap(device => { const record = historyEmailLookup.get(`${dateKey}|${domain}|${device}`); return historyMetrics.map(([label,key]) => { const value=record?.[key]; return <td className={typeof value === 'number' ? `history-score ${scoreTone(value)}` : 'history-score missing'} title={`${domain} · ${device === 'Web' ? 'Desktop' : device} · ${label}`} key={`${dateKey}-${domain}-${device}-${key}`}>{typeof value === 'number' ? value : 'N/A'}</td> }) })}<td className="history-audit-cell">{auditRecord ? checkedTime(auditRecord.checkedAt) : 'N/A'}</td><td className="history-source-cell">{auditRecord?.url ? <a href={auditRecord.url} target="_blank" rel="noreferrer" title={auditRecord.url}>{auditRecord.url}</a> : 'N/A'}</td></Fragment> })}</tr>)}</tbody></table></div></div> : <div className="email-empty">No score history is available in the selected date range.</div>) : (comparisonSites.length ? <div className="email-preview-groups">{comparisonGroups.map((group, groupIndex) => <div className="email-matrix-scroll" key={`email-group-${groupIndex}`}><div className="email-preview-group-label">Websites {groupIndex * 3 + 1}–{groupIndex * 3 + group.length}</div><div className="email-preview-matrix" style={{gridTemplateColumns:`125px repeat(${group.length}, minmax(180px,1fr))`}}>
               <div className="email-matrix-corner">Audit category</div>{group.map(site => <div className="email-matrix-site" key={site.id}><span><i style={{background:colorForDomain(site.domain)}}></i><strong>{site.domain}</strong></span><b>{typeof site.overall === 'number' ? site.overall : '—'}</b></div>)}
               {metrics.map(([key,label]) => <div className="email-matrix-row" key={key}><div className="email-metric-name">{label}<small>0–100 score</small></div>{group.map(site => <div className="email-dual-score" key={`${site.id}-${key}`}><span className={deviceScore(site,'mobile',key) == null ? 'missing' : scoreTone(deviceScore(site,'mobile',key))}>Mobile <b>{deviceScore(site,'mobile',key) ?? '—'}</b></span><span className={deviceScore(site,'desktop',key) == null ? 'missing' : scoreTone(deviceScore(site,'desktop',key))}>Web <b>{deviceScore(site,'desktop',key) ?? '—'}</b></span></div>)}</div>)}
             </div></div>)}</div> : <div className="email-empty">Run a website scan to build the report preview.</div>)}
           </article>
         </section>
       </div>
+      <div className={`view-screen admin-screen ${view === 'admin' ? 'active' : ''}`}>
+        {allowedSections.includes('admin') && <AdminAccessScreen/>}
+      </div>
     </main>
     </div>
     {toast && <div className="toast"><Check size={16}/>{toast}</div>}
   </div>
+}
+
+function App() {
+  const [auth, setAuth] = useState({ loading: true, user: null, permissions: null })
+
+  useEffect(() => {
+    let active = true
+    fetch('/api/auth/me', { cache: 'no-store' })
+      .then(async response => response.ok ? response.json() : null)
+      .then(result => { if (active) setAuth({ loading: false, user: result?.user || null, permissions: result?.permissions || null }) })
+      .catch(() => { if (active) setAuth({ loading: false, user: null, permissions: null }) })
+    return () => { active = false }
+  }, [])
+
+  async function signOut() {
+    try { await fetch('/api/auth/logout', { method: 'POST' }) } catch { /* local session is still cleared below */ }
+    setAuth({ loading: false, user: null, permissions: null })
+  }
+
+  if (auth.loading) return <div className="auth-loading"><span className="auth-logo">stc</span><RefreshCw className="spin" size={20}/><strong>Securing your workspace…</strong></div>
+  if (!auth.user) return <LoginScreen onAuthenticated={result => setAuth({ loading: false, user: result.user, permissions: result.permissions })}/>
+  return <DashboardApp currentUser={auth.user} permissions={auth.permissions} onLogout={signOut}/>
 }
 
 export default App

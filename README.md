@@ -11,6 +11,7 @@ STC-branded React dashboard for comparing Mobile and Web Google PageSpeed scores
 - Saved email recipients and clean three-site-section HTML reports
 - Email delivery only after every required score is available
 - Excel-compatible CSV and printable PDF exports
+- Secure login, STC access requests, Admin approval, and role-based permissions
 
 ## Local setup
 
@@ -28,6 +29,12 @@ STC-branded React dashboard for comparing Mobile and Web Google PageSpeed scores
 - `EMAIL_RECIPIENTS` — optional comma-separated production recipient list (kept out of Git)
 - `REPORT_TIME` — optional daily/monthly report time in Kuwait, for example `15:00`
 - `AUTO_SEND_AFTER_CHECK` — send the completed benchmark report after a successful manual scan (`true` by default)
+- `ADMIN_EMAIL` — Admin account and access-request notification address; falls back to `SMTP_USER`
+- `ADMIN_USERNAME` — initial Admin username (`admin` when omitted)
+- `ADMIN_PASSWORD` — required strong password used to create the first Admin account
+- `PUBLIC_APP_URL` — public application origin used in password-setup invitation links
+- `ACCESS_EMAIL_NOTIFICATIONS` — access request and invitation email delivery (`true` by default)
+- `STATIC_SNAPSHOT_EXPORT` — keep `false` for a protected production application
 - `BENCHMARK_DATA_DIR` — optional persistent directory for runtime state; production defaults to `$HOME/.webpulse-benchmark`
 
 Credentials, generated reports, runtime scan state, dependencies, and production build output are excluded from Git.
@@ -43,4 +50,14 @@ For Hostinger Web Apps select the **Other** framework preset and use:
 - Entry file: `server.mjs`
 - Node.js version: 20 or newer
 
-Add `GOOGLE_PAGESPEED_API_KEY`, `SMTP_USER`, and `SMTP_APP_PASSWORD` in the Web App environment-variable settings. The host-provided `PORT` value is used automatically.
+Add the PageSpeed, SMTP, and Admin variables above in the Web App environment-variable settings. The host-provided `PORT` value is used automatically. Keep `benchmark-auth.json` in the persistent runtime directory so users and access requests survive deployments.
+
+## Access management workflow
+
+1. The first Admin signs in with `ADMIN_USERNAME` and `ADMIN_PASSWORD`.
+2. A new user selects **Request Access** and submits their username, mobile number, department, and STC email ID.
+3. The Admin receives an email notification and sees the request under **Access management**.
+4. Approval creates an invited account and emails a one-time password setup link valid for 48 hours.
+5. The Admin can assign User/Admin role, enable individual dashboard sections, allow email delivery, allow downloads, disable accounts, or resend an invitation.
+
+Authentication and permission checks are enforced by the Node backend. Hiding a menu or button in the React interface is not treated as the security boundary.
