@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFile, writeFile } from 'node:fs/promises'
-import { parseLegacyDesktopHistory } from '../legacy-history.mjs'
+import { parseLegacyDesktopHistory, parseLegacyMobileHistory } from '../legacy-history.mjs'
 import { buildPptReportModel, createPptReportBytes, historyRange, orderPptDomains, PPT_DOMAIN_ORDER } from '../src/pptReport.js'
 
 const domains = orderPptDomains(['stc.com.sa', 'virgin.com', 'stc.com.bh', 'ooredoo.com.kw', 'kw.zain.com', 'stc.com.kw'])
@@ -8,7 +8,8 @@ assert.deepEqual(domains, PPT_DOMAIN_ORDER)
 const labels = { 'stc.com.kw': 'STC Kuwait', 'kw.zain.com': 'Zain Kuwait', 'ooredoo.com.kw': 'Ooredoo Kuwait', 'stc.com.sa': 'STC Saudi Arabia', 'stc.com.bh': 'STC Bahrain', 'virgin.com': 'Virgin' }
 const state = JSON.parse(await readFile(new URL('../work/benchmark-automation-state.json', import.meta.url), 'utf8'))
 const legacySource = await readFile(new URL('../data/legacy-desktop-history-2026.csv', import.meta.url), 'utf8')
-const legacy = parseLegacyDesktopHistory(legacySource)
+const legacyMobileSource = await readFile(new URL('../data/legacy-mobile-history-2026.csv', import.meta.url), 'utf8')
+const legacy = [...parseLegacyDesktopHistory(legacySource), ...parseLegacyMobileHistory(legacyMobileSource)]
 const history = [...new Map([...legacy, ...(Array.isArray(state.history) ? state.history : [])].map(record => [record.id, record])).values()]
 const range = historyRange(history)
 assert.ok(range.min && range.max, 'Saved history must contain a valid date range.')

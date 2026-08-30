@@ -6,7 +6,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 import path from 'node:path'
 import { authPlugin } from './auth.mjs'
-import { parseLegacyDesktopHistory } from './legacy-history.mjs'
+import { parseLegacyDesktopHistory, parseLegacyMobileHistory } from './legacy-history.mjs'
 
 const CATEGORIES = ['performance', 'accessibility', 'best-practices', 'seo']
 const SEVERITY_RANK = { Critical: 0, High: 1, Medium: 2, Low: 3 }
@@ -648,8 +648,13 @@ async function writeJson(file, value) {
 }
 
 async function readLegacyHistory() {
-  const file = path.join(process.cwd(), 'data', 'legacy-desktop-history-2026.csv')
-  return parseLegacyDesktopHistory(await readFile(file, 'utf8'))
+  const desktopFile = path.join(process.cwd(), 'data', 'legacy-desktop-history-2026.csv')
+  const mobileFile = path.join(process.cwd(), 'data', 'legacy-mobile-history-2026.csv')
+  const [desktopSource, mobileSource] = await Promise.all([
+    readFile(desktopFile, 'utf8'),
+    readFile(mobileFile, 'utf8')
+  ])
+  return [...parseLegacyDesktopHistory(desktopSource), ...parseLegacyMobileHistory(mobileSource)]
 }
 
 const WEBSITE_META = {

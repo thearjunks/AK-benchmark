@@ -15,9 +15,10 @@ const LEGACY_SITES = [
 ]
 
 function sourceDateKey(value) {
-  const match = /^(\d{1,2})-([A-Za-z]{3})-(\d{2})$/.exec(String(value).trim())
+  const match = /^(\d{1,2})-([A-Za-z]{3})-(\d{2}|\d{4})$/.exec(String(value).trim())
   if (!match || !MONTHS[match[2]]) throw new Error(`Invalid legacy history date: ${value}`)
-  return `20${match[3]}-${MONTHS[match[2]]}-${match[1].padStart(2, '0')}`
+  const year = match[3].length === 2 ? `20${match[3]}` : match[3]
+  return `${year}-${MONTHS[match[2]]}-${match[1].padStart(2, '0')}`
 }
 
 function score(value, rowNumber, columnNumber) {
@@ -60,6 +61,47 @@ export function parseLegacyDesktopHistory(csvText) {
       performance,
       overall: Math.round((seo + bestPractices + accessibility + performance) / 4),
       source: 'Imported historical desktop CSV',
+      historicalImport: true,
+      dateOnly: true
+    }
+  }))
+}
+
+export function parseLegacyMobileHistory(csvText) {
+  const lines = String(csvText).replace(/^\uFEFF/, '').split(/\r?\n/)
+  if (lines.length < 3) throw new Error('Legacy mobile history CSV has no data rows.')
+  const rowsByDate = new Map()
+  // Source groups: STC Homepage, Zain Homepage, Ooredoo Homepage,
+  // Virgin Mobile Homepage, STC KSA, and STC Bahrain.
+  const groupStarts = [1, 13, 21, 25, 29, 33]
+
+  lines.slice(2).forEach((line, index) => {
+    const rowNumber = index + 3
+    const columns = line.split(',').map(value => value.trim())
+    if (!columns[0]) return
+    if (columns.length !== 37) throw new Error(`Legacy mobile history row ${rowNumber} must contain 37 columns.`)
+    const date = sourceDateKey(columns[0])
+    if (date >= LEGACY_HISTORY_CUTOFF) return
+    rowsByDate.set(date, { date, rowNumber, values: columns })
+  })
+
+  return [...rowsByDate.values()].flatMap(row => LEGACY_SITES.map((site, siteIndex) => {
+    const start = groupStarts[siteIndex]
+    const seo = score(row.values[start], row.rowNumber, start + 1)
+    const bestPractices = score(row.values[start + 1], row.rowNumber, start + 2)
+    const accessibility = score(row.values[start + 2], row.rowNumber, start + 3)
+    const performance = score(row.values[start + 3], row.rowNumber, start + 4)
+    return {
+      id: `legacy-mobile-${site.domain}-${row.date}`,
+      ...site,
+      device: 'Mobile',
+      checkedAt: `${row.date}T09:00:00.000Z`,
+      seo,
+      bestPractices,
+      accessibility,
+      performance,
+      overall: Math.round((seo + bestPractices + accessibility + performance) / 4),
+      source: 'Imported historical mobile CSV',
       historicalImport: true,
       dateOnly: true
     }
