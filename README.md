@@ -56,7 +56,7 @@ For Hostinger Web Apps select the **Other** framework preset and use:
 
 Add the PageSpeed, SMTP, and Admin variables above in the Web App environment-variable settings. The host-provided `PORT` value is used automatically. Keep `benchmark-auth.json` in the persistent runtime directory so users and access requests survive deployments.
 
-For the Zain fallback, add `LIGHTHOUSE_CALLBACK_TOKEN` as a GitHub Actions repository secret, then add the same value plus `GITHUB_ACTIONS_TOKEN` to Hostinger. The workflow runs Chrome outside Hostinger and returns a signed result; login/error-page redirects and incomplete score matrices are rejected.
+For the Zain fallback, add `LIGHTHOUSE_CALLBACK_TOKEN` as a GitHub Actions repository secret, then add the same value plus `GITHUB_ACTIONS_TOKEN` to Hostinger. The workflow runs Chrome outside Hostinger and returns a signed result. Mobile and Desktop are retried independently, and the server combines successful PageSpeed and Lighthouse device results. Same-domain redirects are validated; Zain's exact `/en/shop?error=login_required` audit redirect is accepted because automated Chrome reports `/en/shop` as the displayed page and returns all four categories.
 
 ## Access management workflow
 

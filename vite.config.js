@@ -1439,6 +1439,7 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
         authConfigured: deploymentConfig.authConfigured === true,
         lighthouseFallbackMode: deploymentConfig.lighthouseFallbackMode,
         lighthouseWorkerConfigured: workerConfigured,
+        crossSourceDeviceMerge: true,
         schedulerEnabled: true, persistence: initialized ? 'writable' : 'pending',
         historyCount: state.history?.length || 0,
         error: initializationError
