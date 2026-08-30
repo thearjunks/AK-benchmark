@@ -7,7 +7,7 @@ import nodemailer from 'nodemailer'
 const scrypt = promisify(scryptCallback)
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000
 const INVITE_TTL_MS = 48 * 60 * 60 * 1000
-const ALL_SECTIONS = ['overview', 'history', 'findings', 'emails']
+const ALL_SECTIONS = ['overview', 'history', 'ppt', 'findings', 'emails']
 
 function clean(value, max = 200) {
   return String(value || '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max)
@@ -173,7 +173,7 @@ export function authPlugin(config = {}) {
     if (user.role === 'admin') return true
     const permissions = permissionsFor(user)
     if (requestPath === '/api/automation-state') return permissions.sections.length > 0
-    if (requestPath.startsWith('/api/history')) return permissions.sections.includes('history') && (method !== 'GET' || !requestPath.endsWith('.xlsx') || permissions.canDownload)
+    if (requestPath.startsWith('/api/history')) return (permissions.sections.includes('history') || permissions.sections.includes('ppt')) && (method !== 'GET' || !requestPath.endsWith('.xlsx') || permissions.canDownload)
     if (requestPath.startsWith('/api/email') || requestPath === '/api/history-email-report') return permissions.sections.includes('emails') && (method === 'GET' || permissions.canSendEmail)
     if (requestPath === '/api/analyze' || requestPath === '/api/automation/run' || requestPath === '/api/automation/run-one') return permissions.sections.includes('overview')
     return permissions.sections.includes('overview')

@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
     "start": "node server.mjs",
+    "test:ppt": "node scripts/ppt-report-self-test.mjs",
     "test:single-site": "node scripts/single-site-self-test.mjs",
     "test:worker": "node scripts/lighthouse-worker.mjs --self-test"
   },
@@ -19,6 +20,7 @@
     "@vitejs/plugin-react": "latest",
     "chrome-launcher": "1.2.1",
     "exceljs": "^4.4.0",
+    "jszip": "^3.10.1",
     "lighthouse": "13.4.1",
     "lucide-react": "latest",
     "nodemailer": "^9.0.5",
