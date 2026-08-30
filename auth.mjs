@@ -175,7 +175,7 @@ export function authPlugin(config = {}) {
     if (requestPath === '/api/automation-state') return permissions.sections.length > 0
     if (requestPath.startsWith('/api/history')) return permissions.sections.includes('history') && (method !== 'GET' || !requestPath.endsWith('.xlsx') || permissions.canDownload)
     if (requestPath.startsWith('/api/email') || requestPath === '/api/history-email-report') return permissions.sections.includes('emails') && (method === 'GET' || permissions.canSendEmail)
-    if (requestPath === '/api/analyze' || requestPath === '/api/automation/run') return permissions.sections.includes('overview')
+    if (requestPath === '/api/analyze' || requestPath === '/api/automation/run' || requestPath === '/api/automation/run-one') return permissions.sections.includes('overview')
     return permissions.sections.includes('overview')
   }
 

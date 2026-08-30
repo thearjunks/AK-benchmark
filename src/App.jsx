@@ -238,6 +238,8 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
   const issuesRef = useRef(issues)
   const appliedAutomationRef = useRef(null)
   const [toast, setToast] = useState('')
+  const individualActiveUrl = automation.individualRun?.status === 'running' ? automation.individualRun.url : null
+  const scoreCheckBusy = automation.status === 'running' || Boolean(individualActiveUrl)
 
   const standardComparisonSites = automation.standardUrls?.length ? automation.standardUrls.map((standardUrl, index) => {
     const domain = new URL(standardUrl).hostname.replace(/^www\./, '')
@@ -334,12 +336,13 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
         const next = await response.json()
         if (!active) return
         setAutomation(next)
-        if (next.status === 'running' && Array.isArray(next.sites) && next.sites.length) {
+        const updateToken = next.individualRun?.updatedAt || next.lastCompletedAt
+        if ((next.status === 'running' || next.individualRun?.status === 'running') && Array.isArray(next.sites) && next.sites.length) {
           const progressiveSites = next.sites.map(site => ({ ...site, color: colorForDomain(site.domain), delta: 0 }))
           setSites(progressiveSites)
           setIssues(Array.isArray(next.issues) ? next.issues : [])
-        } else if (next.lastCompletedAt && next.lastCompletedAt !== appliedAutomationRef.current && Array.isArray(next.sites) && next.sites.length) {
-          appliedAutomationRef.current = next.lastCompletedAt
+        } else if (updateToken && updateToken !== appliedAutomationRef.current && Array.isArray(next.sites) && next.sites.length) {
+          appliedAutomationRef.current = updateToken
           const liveSites = next.sites.map(site => ({ ...site, color: colorForDomain(site.domain), delta: 0 }))
           setSites(liveSites)
           setIssues(Array.isArray(next.issues) ? next.issues : [])
@@ -516,7 +519,7 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
   }
 
   async function runStandardCheck() {
-    if (automation.status === 'running') return
+    if (scoreCheckBusy) return
     if (automation.hostingMode === 'static-snapshot') return notify('Live score checks require the Hostinger Node backend to be enabled')
     try {
       const response = await fetch('/api/automation/run', { method: 'POST' })
@@ -545,9 +548,35 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
     } catch (error) { notify(error.message || 'Unable to start the score check') }
   }
 
+  async function runIndividualCheck(standardUrl) {
+    if (scoreCheckBusy) return notify('Wait for the current score check to finish')
+    if (automation.hostingMode === 'static-snapshot') return notify('Live score checks require the Hostinger Node backend to be enabled')
+    try {
+      const response = await fetch('/api/automation/run-one', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: standardUrl })
+      })
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(result.error || 'Unable to start this website score check')
+      const index = (automation.standardUrls || []).indexOf(standardUrl)
+      const zeroSite = zeroSiteForUrl(standardUrl, index)
+      setSites(current => current.some(site => site.standardUrl === standardUrl || site.domain === zeroSite.domain)
+        ? current.map(site => site.standardUrl === standardUrl || site.domain === zeroSite.domain ? zeroSite : site)
+        : [...current, zeroSite])
+      setAutomation(current => ({
+        ...current,
+        sites: (current.sites || []).map((site, siteIndex) => siteIndex === index ? zeroSite : site),
+        progress: (current.progress || []).map((item, itemIndex) => itemIndex === index
+          ? { ...item, status: 'scanning', attempt: 1, overall: 0, checkedAt: null, latestSite: zeroSite }
+          : item),
+        individualRun: { url: standardUrl, domain: zeroSite.domain, status: 'running', startedAt: new Date().toISOString() }
+      }))
+      notify(`Score check started for ${zeroSite.domain}`)
+    } catch (error) { notify(error.message || 'Unable to start this website score check') }
+  }
+
   async function toggleAutoSendAfterCheck() {
     if (!permissions.canSendEmail) return notify('You do not have permission to change email delivery')
-    if (automation.status === 'running') return
+    if (scoreCheckBusy) return
     const next = !autoSendAfterCheck
     setAutoSendAfterCheck(next)
     localStorage.setItem('benchmark-auto-send-after-check', String(next))
@@ -699,11 +728,11 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
       <section className="standard-monitor">
         <div className="standard-monitor-head">
           <div><span>Automated standard monitoring</span><h1>Six websites. One complete score check.</h1><p>Each run resets scores to zero, then fills verified PageSpeed values with a GitHub Lighthouse fallback for blocked sites.</p></div>
-          <div className="automation-actions"><span className="next-run">Next automatic run<strong>{checkedTime(automation.nextRunAt)}</strong></span>{permissions.canSendEmail && <label className={`auto-send-toggle ${autoSendAfterCheck ? 'enabled' : ''}`} title={autoSendAfterCheck ? 'The completed report will be emailed to all saved recipients' : 'The completed report will wait for manual review'}><input type="checkbox" checked={autoSendAfterCheck} onChange={toggleAutoSendAfterCheck} disabled={automation.status === 'running'}/><span aria-hidden="true"><i></i></span><b>Auto-Send Email<small>{autoSendAfterCheck ? 'Enabled' : 'Disabled'}</small></b></label>}<button onClick={runStandardCheck} disabled={automation.status === 'running'}>{automation.status === 'running' ? <RefreshCw className="spin" size={17}/> : <Gauge size={17}/>} {automation.status === 'running' ? `Checking ${automation.progress?.filter(item => item.status === 'complete').length || 0}/6` : 'Check Score Now'}</button></div>
+          <div className="automation-actions"><span className="next-run">Next automatic run<strong>{checkedTime(automation.nextRunAt)}</strong></span>{permissions.canSendEmail && <label className={`auto-send-toggle ${autoSendAfterCheck ? 'enabled' : ''}`} title={autoSendAfterCheck ? 'The completed report will be emailed to all saved recipients' : 'The completed report will wait for manual review'}><input type="checkbox" checked={autoSendAfterCheck} onChange={toggleAutoSendAfterCheck} disabled={scoreCheckBusy}/><span aria-hidden="true"><i></i></span><b>Auto-Send Email<small>{autoSendAfterCheck ? 'Enabled' : 'Disabled'}</small></b></label>}<button onClick={runStandardCheck} disabled={scoreCheckBusy}>{automation.status === 'running' ? <RefreshCw className="spin" size={17}/> : <Gauge size={17}/>} {automation.status === 'running' ? `Checking ${automation.progress?.filter(item => item.status === 'complete').length || 0}/6` : individualActiveUrl ? 'Website check running' : 'Check Score Now'}</button></div>
         </div>
-        <div className={`automation-status ${automation.status || 'idle'}`}>
-          {automation.status === 'running' ? <RefreshCw className="spin" size={15}/> : automation.status === 'failed' ? <AlertTriangle size={15}/> : <Check size={15}/>}
-          <span>{automation.status === 'running' ? `Scores started at zero and are updating as each website completes. ${autoSendAfterCheck ? 'The report will be emailed after all six are complete.' : 'The completed report will be held for manual review.'}` : automation.status === 'failed' ? `${automation.error || 'The latest complete check failed.'} Completed websites remain updated, unfinished websites stay at zero, and email was not sent.` : automation.lastCompletedAt ? `Last complete run: ${checkedTime(automation.lastCompletedAt)} · Email ${automation.emailStatus?.status || 'not sent'}${automation.emailStatus?.message ? ` — ${automation.emailStatus.message}` : ''}` : 'Ready for the first complete six-site score check.'}</span>
+        <div className={`automation-status ${individualActiveUrl ? 'running' : automation.status || 'idle'}`}>
+          {individualActiveUrl || automation.status === 'running' ? <RefreshCw className="spin" size={15}/> : automation.status === 'failed' ? <AlertTriangle size={15}/> : <Check size={15}/>}
+          <span>{individualActiveUrl ? `Rechecking ${new URL(individualActiveUrl).hostname.replace(/^www\./, '')}. Only this website is reset; the other scores remain available.` : automation.status === 'running' ? `Scores started at zero and are updating as each website completes. ${autoSendAfterCheck ? 'The report will be emailed after all six are complete.' : 'The completed report will be held for manual review.'}` : automation.status === 'failed' ? `${automation.error || 'The latest complete check failed.'} Completed websites remain updated, unfinished websites stay at zero, and email was not sent.` : automation.lastCompletedAt ? `Last complete run: ${checkedTime(automation.lastCompletedAt)} · Email ${automation.emailStatus?.status || 'not sent'}${automation.emailStatus?.message ? ` — ${automation.emailStatus.message}` : ''}` : 'Ready for the first complete six-site score check.'}</span>
         </div>
         <div className="standard-url-grid">
           {(automation.standardUrls || []).map((standardUrl, index) => {
@@ -713,7 +742,7 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
             const displayOverall = typeof progress?.overall === 'number' ? progress.overall : site?.overall
             const displayCheckedAt = progress?.checkedAt || site?.scannedAt
             return <article key={standardUrl} className={progress?.status || ''}>
-              <i style={{ background: colorForDomain(domain) }}>{index + 1}</i><div><strong>{domain}</strong><small title={standardUrl}>{standardUrl}</small><em><Clock3 size={11}/>Last checked: {checkedTime(displayCheckedAt)}</em></div>
+              <i style={{ background: colorForDomain(domain) }}>{index + 1}</i><div><strong>{domain}</strong><small title={standardUrl}>{standardUrl}</small><em><Clock3 size={11}/>Last checked: {checkedTime(displayCheckedAt)}</em><button type="button" className="card-scan-action" onClick={() => runIndividualCheck(standardUrl)} disabled={scoreCheckBusy} aria-label={`Check score now for ${domain}`}>{individualActiveUrl === standardUrl ? <RefreshCw className="spin" size={11}/> : <Gauge size={11}/>} {individualActiveUrl === standardUrl ? 'Checking…' : 'Check Score Now'}</button></div>
               <b className={typeof displayOverall === 'number' ? scoreTone(displayOverall) : ''}>{displayOverall ?? '—'}</b>
               {progress?.status === 'scanning' && <RefreshCw className="spin card-progress" size={14}/>}
               {progress?.status === 'failed' && <AlertTriangle className="card-progress" size={14}/>}

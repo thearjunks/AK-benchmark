@@ -19,6 +19,13 @@ const STANDARD_URLS = [
 ]
 const DEVICE_METRICS = ['performance', 'accessibility', 'bestPractices', 'seo']
 
+export function standardUrlIndex(value) {
+  try {
+    const normalized = new URL(value).href
+    return STANDARD_URLS.findIndex(url => new URL(url).href === normalized)
+  } catch { return -1 }
+}
+
 function cleanText(value = '') {
   return value
     .replace(/\[([^\]]+)]\([^)]+\)/g, '$1')
@@ -941,6 +948,7 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
   let timer = null
   let monthlyTimer = null
   let running = null
+  let individualRunning = null
   let state = {
     status: 'idle', standardUrls: STANDARD_URLS, sites: [], issues: [], progress: [], history: [],
     lastAttemptAt: null, lastCompletedAt: null, nextRunAt: nextKuwaitRun(),
@@ -1084,7 +1092,7 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
   }
 
   async function runAutomation(trigger) {
-    if (running) return running
+    if (running || individualRunning) return running || individualRunning
     running = (async () => {
       const stagedSites = []
       const stagedIssues = []
@@ -1092,7 +1100,7 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
       const resetSites = STANDARD_URLS.map(zeroScoreSite)
       state = {
         ...state, status: 'running', trigger, lastAttemptAt: new Date().toISOString(),
-        error: null, emailStatus: null, sites: resetSites, issues: [],
+        error: null, emailStatus: null, individualRun: null, sites: resetSites, issues: [],
         progress: STANDARD_URLS.map((url, index) => ({
           url,
           domain: resetSites[index].domain,
@@ -1171,6 +1179,85 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
       return state
     })()
     return running
+  }
+
+  async function runIndividualAutomation(url, canSendEmail) {
+    if (running || individualRunning) throw new Error('Another score check is already running.')
+    const index = standardUrlIndex(url)
+    if (index < 0) throw new Error('Choose one of the six standard website URLs.')
+    const standardUrl = STANDARD_URLS[index]
+    const domain = new URL(standardUrl).hostname.replace(/^www\./, '')
+    individualRunning = (async () => {
+      const startedAt = new Date().toISOString()
+      const zeroSite = zeroScoreSite(standardUrl, index)
+      state.sites[index] = zeroSite
+      state.issues = state.issues.filter(issue => issue.site !== domain)
+      state.progress[index] = { url: standardUrl, domain, status: 'scanning', attempt: 1, overall: 0, checkedAt: null, latestSite: zeroSite }
+      state.individualRun = { url: standardUrl, domain, status: 'running', startedAt, updatedAt: startedAt, error: null }
+      await persistState()
+      try {
+        let result
+        let lastError
+        const canUseWorker = workerConfigured && domain === 'kw.zain.com'
+        for (let attempt = 1; attempt <= (canUseWorker ? 1 : 2); attempt += 1) {
+          state.progress[index] = { ...state.progress[index], status: 'scanning', attempt }
+          await persistState()
+          try {
+            const candidate = await analyzeWebsite(standardUrl, apiKey, deploymentConfig.lighthouseFallbackMode)
+            if (!hasCompleteScoreMatrix(candidate.site)) throw new Error('Mobile or Web score columns are incomplete.')
+            result = candidate
+            break
+          } catch (error) { lastError = error }
+        }
+        if (!result && canUseWorker) {
+          state.progress[index] = { ...state.progress[index], message: 'Waiting for GitHub Actions Lighthouse.' }
+          await persistState()
+          try { result = await runGitHubLighthouse(standardUrl) } catch (error) { lastError = error }
+        }
+        if (!result) throw lastError || new Error('Score check failed.')
+
+        result.site.standardUrl = standardUrl
+        result.site.scannedAt = new Date().toISOString()
+        state.sites[index] = result.site
+        state.issues = [...state.issues.filter(issue => issue.site !== domain), ...result.issues]
+        state.history = mergeHistory(state.history, historyRecordsForSite(result.site))
+        state.progress[index] = { ...state.progress[index], status: 'complete', overall: result.site.overall, checkedAt: result.site.scannedAt, latestSite: result.site, message: null }
+        const completedAt = new Date().toISOString()
+        state.individualRun = { url: standardUrl, domain, status: 'completed', startedAt, completedAt, updatedAt: completedAt, error: null }
+
+        if (STANDARD_URLS.every((item, siteIndex) => state.progress[siteIndex]?.status === 'complete' && hasCompleteScoreMatrix(state.sites[siteIndex]))) {
+          state.status = 'completed'
+          state.lastCompletedAt = completedAt
+          state.error = null
+          if (settings.autoSendAfterCheck && canSendEmail) {
+            const recipients = Array.isArray(settings.recipients) ? settings.recipients.filter(Boolean) : []
+            if (recipients.length && transporter) {
+              try {
+                await transporter.verify()
+                await sendMatrixEmail(transporter, emailConfig, recipients, state.sites)
+                state.emailStatus = { status: 'sent', sentAt: completedAt, recipients: recipients.length }
+              } catch (error) { state.emailStatus = { status: 'failed', message: cleanText(error.message || 'Email delivery failed.') } }
+            } else state.emailStatus = { status: 'skipped', message: recipients.length ? 'Gmail is not configured.' : 'No saved recipients.' }
+          } else state.emailStatus = { status: 'skipped', message: 'Website score check completed. Use Send report now if needed.' }
+        } else {
+          const remainingFailures = state.progress.filter(item => item?.status === 'failed').map(item => `${item.domain}: ${item.message || 'Score check failed.'}`)
+          state.status = 'failed'
+          state.error = remainingFailures.join(' | ') || 'One or more website score columns are incomplete.'
+          state.emailStatus = { status: 'blocked', message: 'Email not sent because the complete score matrix was not available.' }
+        }
+        await persistState()
+      } catch (error) {
+        const failedAt = new Date().toISOString()
+        const message = cleanText(error.message || 'Score check failed.')
+        state.progress[index] = { ...state.progress[index], status: 'failed', overall: 0, checkedAt: null, message }
+        state.individualRun = { url: standardUrl, domain, status: 'failed', startedAt, failedAt, updatedAt: failedAt, error: message }
+        state.status = 'failed'
+        state.error = `${domain}: ${message}`
+        state.emailStatus = { status: 'blocked', message: 'Email not sent because the complete score matrix was not available.' }
+        await persistState()
+      } finally { individualRunning = null }
+    })()
+    return individualRunning
   }
 
   const handler = async (req, res, next) => {
@@ -1275,14 +1362,37 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
     }
     if (req.method === 'POST' && requestPath === '/api/automation/run') {
       res.setHeader('Content-Type', 'application/json; charset=utf-8')
-      if (running) {
+      if (running || individualRunning) {
         res.statusCode = 409
-        return res.end(JSON.stringify({ error: 'A full score check is already running.' }))
+        return res.end(JSON.stringify({ error: 'Another score check is already running.' }))
       }
       const canSendEmail = req.benchmarkUser?.role === 'admin' || req.benchmarkPermissions?.canSendEmail === true
       runAutomation(canSendEmail ? 'manual' : 'manual-no-email').catch(() => {})
       res.statusCode = 202
       return res.end(JSON.stringify({ started: true }))
+    }
+    if (req.method === 'POST' && requestPath === '/api/automation/run-one') {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8')
+      if (running || individualRunning) {
+        res.statusCode = 409
+        return res.end(JSON.stringify({ error: 'Another score check is already running.' }))
+      }
+      try {
+        let body = ''
+        for await (const chunk of req) {
+          body += chunk
+          if (body.length > 2_048) throw new Error('Request is too large.')
+        }
+        const { url } = JSON.parse(body || '{}')
+        if (standardUrlIndex(url) < 0) throw new Error('Choose one of the six standard website URLs.')
+        const canSendEmail = req.benchmarkUser?.role === 'admin' || req.benchmarkPermissions?.canSendEmail === true
+        runIndividualAutomation(url, canSendEmail).catch(() => {})
+        res.statusCode = 202
+        return res.end(JSON.stringify({ started: true, url: new URL(url).href }))
+      } catch (error) {
+        res.statusCode = 400
+        return res.end(JSON.stringify({ error: cleanText(error.message || 'Unable to start the website score check.') }))
+      }
     }
     if (req.method === 'POST' && requestPath === '/api/history-email-report') {
       res.setHeader('Content-Type', 'application/json; charset=utf-8')

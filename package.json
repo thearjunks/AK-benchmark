@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
     "start": "node server.mjs",
+    "test:single-site": "node scripts/single-site-self-test.mjs",
     "test:worker": "node scripts/lighthouse-worker.mjs --self-test"
   },
   "engines": {
