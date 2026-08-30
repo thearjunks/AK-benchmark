@@ -69,17 +69,23 @@ try {
     body: { username: 'UpperCase', mobile: '50000000', department: 'Digital', email: 'upper@stc.com.kw', password: userPassword, confirmPassword: userPassword }
   })
   assert.equal(invalid.response.status, 400)
-  assert.match(invalid.payload.error, /lowercase letters only/i)
+  assert.match(invalid.payload.error, /lowercase letters/i)
+
+  const invalidSeparators = await request('/api/auth/request-access', {
+    method: 'POST',
+    body: { username: 'bad..name', mobile: '50000000', department: 'Digital', email: 'bad@stc.com.kw', password: userPassword, confirmPassword: userPassword }
+  })
+  assert.equal(invalidSeparators.response.status, 400)
 
   const submitted = await request('/api/auth/request-access', {
     method: 'POST',
-    body: { username: 'testuser', mobile: '50000000', department: 'Digital', email: 'testuser@stc.com.kw', password: userPassword, confirmPassword: userPassword }
+    body: { username: 'mohammed.mohsin', mobile: '50000000', department: 'Digital', email: 'testuser@stc.com.kw', password: userPassword, confirmPassword: userPassword }
   })
   assert.equal(submitted.response.status, 201)
 
   const accessList = await request('/api/admin/access', { cookie: adminLogin.cookie })
   assert.equal(accessList.response.status, 200)
-  const pending = accessList.payload.requests.find(item => item.username === 'testuser')
+  const pending = accessList.payload.requests.find(item => item.username === 'mohammed.mohsin')
   assert.ok(pending)
   assert.equal(Object.hasOwn(pending, 'passwordHash'), false)
 
@@ -90,39 +96,57 @@ try {
   assert.equal(approved.response.status, 200)
   assert.equal(approved.payload.activated, true)
 
-  const userLogin = await request('/api/auth/login', { method: 'POST', body: { identifier: 'testuser', password: userPassword } })
+  const userLogin = await request('/api/auth/login', { method: 'POST', body: { identifier: 'mohammed.mohsin', password: userPassword } })
   assert.equal(userLogin.response.status, 200)
   const forbidden = await request('/api/admin/access', { cookie: userLogin.cookie })
   assert.equal(forbidden.response.status, 403)
 
+  const created = await request('/api/admin/users', {
+    method: 'POST', cookie: adminLogin.cookie,
+    body: { username: 'priya,thangarasa', mobile: '51111111', department: 'Marketing', email: 'priya@stc.com.kw', password: userPassword, confirmPassword: userPassword, role: 'user', canSendEmail: true, canDownload: true }
+  })
+  assert.equal(created.response.status, 201)
+  assert.equal(created.payload.user.username, 'priya,thangarasa')
+  assert.equal((await request('/api/auth/login', { method: 'POST', body: { identifier: 'priya,thangarasa', password: userPassword } })).response.status, 200)
+
+  const renamed = await request(`/api/admin/users/${created.payload.user.id}`, {
+    method: 'PATCH', cookie: adminLogin.cookie,
+    body: { ...created.payload.user, username: 'priya.thangarasa' }
+  })
+  assert.equal(renamed.response.status, 200)
+  assert.equal(renamed.payload.user.username, 'priya.thangarasa')
+  assert.equal((await request('/api/auth/login', { method: 'POST', body: { identifier: 'priya.thangarasa', password: userPassword } })).response.status, 200)
+
   const users = (await request('/api/admin/access', { cookie: adminLogin.cookie })).payload.users
-  const testUser = users.find(item => item.username === 'testuser')
+  const testUser = users.find(item => item.username === 'mohammed.mohsin')
   const singleReset = await request('/api/admin/password-reset', {
     method: 'POST', cookie: adminLogin.cookie,
     body: { scope: 'user', userId: testUser.id, password: resetPassword, confirmPassword: resetPassword }
   })
   assert.equal(singleReset.response.status, 200)
   assert.equal(singleReset.payload.users, 1)
-  assert.equal((await request('/api/auth/login', { method: 'POST', body: { identifier: 'testuser', password: resetPassword } })).response.status, 200)
+  assert.equal((await request('/api/auth/login', { method: 'POST', body: { identifier: 'mohammed.mohsin', password: resetPassword } })).response.status, 200)
 
   const resetAll = await request('/api/admin/password-reset', {
     method: 'POST', cookie: adminLogin.cookie,
     body: { scope: 'all', password: allPassword, confirmPassword: allPassword }
   })
   assert.equal(resetAll.response.status, 200)
-  assert.equal(resetAll.payload.users, 2)
-  assert.equal((await request('/api/auth/login', { method: 'POST', body: { identifier: 'testuser', password: allPassword } })).response.status, 200)
+  assert.equal(resetAll.payload.users, 3)
+  assert.equal((await request('/api/auth/login', { method: 'POST', body: { identifier: 'mohammed.mohsin', password: allPassword } })).response.status, 200)
+  assert.equal((await request('/api/auth/login', { method: 'POST', body: { identifier: 'priya.thangarasa', password: allPassword } })).response.status, 200)
 
   const deleted = await request(`/api/admin/users/${testUser.id}`, { method: 'DELETE', cookie: adminLogin.cookie })
   assert.equal(deleted.response.status, 200)
-  assert.equal((await request('/api/auth/login', { method: 'POST', body: { identifier: 'testuser', password: allPassword } })).response.status, 401)
+  assert.equal((await request('/api/auth/login', { method: 'POST', body: { identifier: 'mohammed.mohsin', password: allPassword } })).response.status, 401)
+  assert.equal((await request(`/api/admin/users/${created.payload.user.id}`, { method: 'DELETE', cookie: adminLogin.cookie })).response.status, 200)
 
   const history = await request('/api/history', { cookie: adminLogin.cookie })
   assert.equal(history.response.status, 200)
   assert.ok(history.payload.history.length >= 864)
   await access(path.join(runtimeDir, 'website-benchmark-score-history.xlsx'))
 
-  console.log(`Auth validation passed: request, approval, RBAC, single/all reset, deletion, ${history.payload.history.length} history records.`)
+  console.log(`Auth validation passed: special-character request, Admin creation, username edit, RBAC, resets, deletion, ${history.payload.history.length} history records.`)
 } finally {
   child.kill('SIGTERM')
 }

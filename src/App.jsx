@@ -326,7 +326,7 @@ function LoginScreen({ onAuthenticated }) {
           </h2>
           <p>
             {mode === "request"
-              ? "Choose a lowercase username and password, then submit your STC details for Admin review."
+              ? "Choose a lowercase username using letters, dots, or commas, then submit your STC details for Admin review."
               : mode === "setup"
                 ? "Use at least 10 characters. Your invitation can only be used once."
                 : "Use your username or STC email and password."}
@@ -379,8 +379,8 @@ function LoginScreen({ onAuthenticated }) {
               <span>Username</span>
               <input
                 required
-                pattern="[a-z]+"
-                title="Lowercase letters only"
+                pattern="[a-z]+(?:[.,][a-z]+)*"
+                title="Use lowercase letters, with dots or commas only between letter groups"
                 autoCapitalize="none"
                 autoComplete="username"
                 value={request.username}
@@ -389,11 +389,11 @@ function LoginScreen({ onAuthenticated }) {
                     ...request,
                     username: event.target.value
                       .toLowerCase()
-                      .replace(/[^a-z]/g, ""),
+                      .replace(/[^a-z.,]/g, ""),
                   })
                 }
               />
-              <small>Lowercase letters only</small>
+              <small>Lowercase letters with dots or commas between letter groups</small>
             </label>
             <label>
               <span>Mobile number</span>
@@ -519,6 +519,8 @@ function AdminAccessScreen({ currentUser }) {
   const [data, setData] = useState({ requests: [], users: [], loading: true });
   const [notice, setNotice] = useState("");
   const [passwordReset, setPasswordReset] = useState(null);
+  const [newUser, setNewUser] = useState(null);
+  const [usernameEdit, setUsernameEdit] = useState(null);
   const sections = [
     ["overview", "Benchmark overview"],
     ["history", "Score history"],
@@ -623,6 +625,56 @@ function AdminAccessScreen({ currentUser }) {
     );
     if (response.ok) {
       setPasswordReset(null);
+      await refresh();
+    }
+  }
+
+  async function createUser(event) {
+    event.preventDefault();
+    if (newUser.password !== newUser.confirmPassword) {
+      return setNotice("Password and Confirm Password must match.");
+    }
+    const response = await fetch("/api/admin/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(newUser),
+    });
+    const result = await response.json().catch(() => ({}));
+    setNotice(
+      response.ok
+        ? `User ${result.user.username} was created and can sign in immediately.`
+        : result.error || "Unable to create user",
+    );
+    if (response.ok) {
+      setNewUser(null);
+      await refresh();
+    }
+  }
+
+  async function saveUsername(event) {
+    event.preventDefault();
+    const user = data.users.find((item) => item.id === usernameEdit.userId);
+    if (!user) return;
+    const response = await fetch(`/api/admin/users/${user.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        role: user.role,
+        status: user.status,
+        sections: user.sections,
+        canSendEmail: user.canSendEmail,
+        canDownload: user.canDownload,
+        username: usernameEdit.username,
+      }),
+    });
+    const result = await response.json().catch(() => ({}));
+    setNotice(
+      response.ok
+        ? `Username updated to ${result.user.username}.`
+        : result.error || "Unable to update username",
+    );
+    if (response.ok) {
+      setUsernameEdit(null);
       await refresh();
     }
   }
@@ -753,21 +805,181 @@ function AdminAccessScreen({ currentUser }) {
             <span>User permissions</span>
             <h2>Roles and feature access</h2>
           </div>
-          <button
-            className="reset-all"
-            onClick={() =>
-              setPasswordReset({
-                scope: "all",
-                user: null,
-                password: "",
-                confirmPassword: "",
-              })
-            }
-          >
-            <LockKeyhole size={14} />
-            Reset all passwords
-          </button>
+          <div className="admin-panel-buttons">
+            <button
+              className="create-user"
+              onClick={() =>
+                setNewUser({
+                  username: "",
+                  email: "",
+                  mobile: "",
+                  department: "",
+                  password: "",
+                  confirmPassword: "",
+                  role: "user",
+                  canSendEmail: false,
+                  canDownload: true,
+                })
+              }
+            >
+              <UserPlus size={14} />
+              Create user
+            </button>
+            <button
+              className="reset-all"
+              onClick={() =>
+                setPasswordReset({
+                  scope: "all",
+                  user: null,
+                  password: "",
+                  confirmPassword: "",
+                })
+              }
+            >
+              <LockKeyhole size={14} />
+              Reset all passwords
+            </button>
+          </div>
         </div>
+        {newUser && (
+          <form className="admin-create-panel" onSubmit={createUser}>
+            <div className="admin-create-heading">
+              <strong>Create a new user</strong>
+              <small>The account becomes active immediately after creation.</small>
+            </div>
+            <label>
+              Username
+              <input
+                required
+                pattern="[a-z]+(?:[.,][a-z]+)*"
+                title="Use lowercase letters, with dots or commas only between letter groups"
+                value={newUser.username}
+                onChange={(event) =>
+                  setNewUser({
+                    ...newUser,
+                    username: event.target.value
+                      .toLowerCase()
+                      .replace(/[^a-z.,]/g, ""),
+                  })
+                }
+              />
+              <small>Example: mohammed.mohsin</small>
+            </label>
+            <label>
+              STC email ID
+              <input
+                required
+                type="email"
+                placeholder="name@stc.com.kw"
+                value={newUser.email}
+                onChange={(event) =>
+                  setNewUser({ ...newUser, email: event.target.value })
+                }
+              />
+            </label>
+            <label>
+              Mobile number
+              <input
+                required
+                inputMode="tel"
+                value={newUser.mobile}
+                onChange={(event) =>
+                  setNewUser({ ...newUser, mobile: event.target.value })
+                }
+              />
+            </label>
+            <label>
+              Department
+              <input
+                required
+                value={newUser.department}
+                onChange={(event) =>
+                  setNewUser({ ...newUser, department: event.target.value })
+                }
+              />
+            </label>
+            <label>
+              Password
+              <input
+                required
+                minLength="10"
+                type="password"
+                autoComplete="new-password"
+                value={newUser.password}
+                onChange={(event) =>
+                  setNewUser({ ...newUser, password: event.target.value })
+                }
+              />
+            </label>
+            <label>
+              Confirm password
+              <input
+                required
+                minLength="10"
+                type="password"
+                autoComplete="new-password"
+                value={newUser.confirmPassword}
+                onChange={(event) =>
+                  setNewUser({
+                    ...newUser,
+                    confirmPassword: event.target.value,
+                  })
+                }
+              />
+            </label>
+            <label>
+              Role
+              <select
+                value={newUser.role}
+                onChange={(event) =>
+                  setNewUser({ ...newUser, role: event.target.value })
+                }
+              >
+                <option value="user">User</option>
+                <option value="admin">Admin</option>
+              </select>
+            </label>
+            <div className="admin-create-permissions">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={newUser.role === "admin" || newUser.canSendEmail}
+                  disabled={newUser.role === "admin"}
+                  onChange={(event) =>
+                    setNewUser({
+                      ...newUser,
+                      canSendEmail: event.target.checked,
+                    })
+                  }
+                />
+                Send email reports
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={newUser.role === "admin" || newUser.canDownload}
+                  disabled={newUser.role === "admin"}
+                  onChange={(event) =>
+                    setNewUser({
+                      ...newUser,
+                      canDownload: event.target.checked,
+                    })
+                  }
+                />
+                Download reports
+              </label>
+            </div>
+            <div className="admin-create-actions">
+              <button type="button" onClick={() => setNewUser(null)}>
+                Cancel
+              </button>
+              <button type="submit">
+                <UserPlus size={13} />
+                Create user
+              </button>
+            </div>
+          </form>
+        )}
         {passwordReset && (
           <form className="password-reset-panel" onSubmit={resetPasswords}>
             <div>
@@ -873,6 +1085,38 @@ function AdminAccessScreen({ currentUser }) {
                   </button>
                 )}
               </header>
+              {usernameEdit?.userId === user.id && (
+                <form className="username-edit-row" onSubmit={saveUsername}>
+                  <label>
+                    Edit username
+                    <input
+                      required
+                      autoFocus
+                      pattern="[a-z]+(?:[.,][a-z]+)*"
+                      title="Use lowercase letters, with dots or commas only between letter groups"
+                      value={usernameEdit.username}
+                      onChange={(event) =>
+                        setUsernameEdit({
+                          ...usernameEdit,
+                          username: event.target.value
+                            .toLowerCase()
+                            .replace(/[^a-z.,]/g, ""),
+                        })
+                      }
+                    />
+                  </label>
+                  <small>Lowercase letters with dots or commas between letter groups</small>
+                  <div>
+                    <button type="button" onClick={() => setUsernameEdit(null)}>
+                      Cancel
+                    </button>
+                    <button type="submit">
+                      <Check size={12} />
+                      Save username
+                    </button>
+                  </div>
+                </form>
+              )}
               <div className="permission-grid">
                 <div>
                   <span>Dashboard sections</span>
@@ -923,6 +1167,17 @@ function AdminAccessScreen({ currentUser }) {
                     Download Excel/PDF/PPT reports
                   </label>
                   <div className="admin-user-actions">
+                    <button
+                      onClick={() =>
+                        setUsernameEdit({
+                          userId: user.id,
+                          username: user.username,
+                        })
+                      }
+                    >
+                      <UserCheck size={12} />
+                      Edit username
+                    </button>
                     <button
                       onClick={() =>
                         setPasswordReset({

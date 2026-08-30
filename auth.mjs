@@ -8,9 +8,14 @@ const scrypt = promisify(scryptCallback)
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000
 const INVITE_TTL_MS = 48 * 60 * 60 * 1000
 const ALL_SECTIONS = ['overview', 'history', 'ppt', 'findings', 'emails']
+const USERNAME_PATTERN = /^[a-z]+(?:[.,][a-z]+)*$/
 
 function clean(value, max = 200) {
   return String(value || '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max)
+}
+
+function validUsername(value) {
+  return USERNAME_PATTERN.test(String(value || ''))
 }
 
 function runtimeDirectory() {
@@ -218,7 +223,7 @@ export function authPlugin(config = {}) {
           department: clean(input.department, 100), email: clean(input.email).toLowerCase(), status: 'pending',
           requestedAt: new Date().toISOString(), reviewedAt: null, reviewedBy: null
         }
-        if (!/^[a-z]+$/.test(request.username)) return json(res, 400, { error: 'Username must contain lowercase letters only.' })
+        if (!validUsername(request.username)) return json(res, 400, { error: 'Username must use lowercase letters, with dots or commas only between letter groups.' })
         if (!request.department || !/^\+?[0-9 ()-]{8,20}$/.test(request.mobile) || !stcEmailPattern.test(request.email)) return json(res, 400, { error: 'Enter a valid mobile number, department, and STC email ID.' })
         if (requestedPassword.length < 10) return json(res, 400, { error: 'Use a password with at least 10 characters.' })
         if (requestedPassword !== String(input.confirmPassword || '')) return json(res, 400, { error: 'Password and Confirm Password must match.' })
@@ -325,12 +330,48 @@ export function authPlugin(config = {}) {
         await persist()
         return json(res, 200, { reset: true, scope: input.scope === 'all' ? 'all' : 'user', users: targets.length })
       }
+      if (requestPath === '/api/admin/users' && req.method === 'POST') {
+        if (!requireAdmin(req, res)) return
+        const input = await bodyJson(req)
+        const username = clean(input.username, 80)
+        const email = clean(input.email).toLowerCase()
+        const mobile = clean(input.mobile, 30)
+        const department = clean(input.department, 100)
+        const nextPassword = String(input.password || '')
+        if (!validUsername(username)) return json(res, 400, { error: 'Username must use lowercase letters, with dots or commas only between letter groups.' })
+        if (!department || !/^\+?[0-9 ()-]{8,20}$/.test(mobile) || !stcEmailPattern.test(email)) return json(res, 400, { error: 'Enter a valid mobile number, department, and STC email ID.' })
+        if (nextPassword.length < 10) return json(res, 400, { error: 'Use a password with at least 10 characters.' })
+        if (nextPassword !== String(input.confirmPassword || '')) return json(res, 400, { error: 'Password and Confirm Password must match.' })
+        if (store.users.some(user => user.email === email || user.username.toLowerCase() === username) || store.requests.some(request => request.status === 'pending' && (request.email === email || request.username.toLowerCase() === username))) {
+          return json(res, 409, { error: 'An account or pending request already exists for this username or email.' })
+        }
+        const role = input.role === 'admin' ? 'admin' : 'user'
+        const user = {
+          id: randomBytes(12).toString('hex'), username, email, mobile, department, role, status: 'active',
+          sections: role === 'admin' ? [...ALL_SECTIONS] : ['overview', 'history', 'ppt', 'findings'],
+          canSendEmail: role === 'admin' || input.canSendEmail === true,
+          canDownload: role === 'admin' || input.canDownload !== false,
+          passwordHash: await passwordHash(nextPassword), inviteTokenHash: null, inviteExpiresAt: null,
+          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+        }
+        store.users.push(user)
+        await persist()
+        return json(res, 201, { user: publicUser(user) })
+      }
       const userMatch = requestPath.match(/^\/api\/admin\/users\/([^/]+)$/)
       if (userMatch && req.method === 'PATCH') {
         const admin = requireAdmin(req, res); if (!admin) return
         const input = await bodyJson(req)
         const user = store.users.find(item => item.id === userMatch[1])
         if (!user) return json(res, 404, { error: 'User not found.' })
+        if (input.username !== undefined) {
+          const username = clean(input.username, 80)
+          if (!validUsername(username)) return json(res, 400, { error: 'Username must use lowercase letters, with dots or commas only between letter groups.' })
+          if (store.users.some(item => item.id !== user.id && item.username.toLowerCase() === username) || store.requests.some(request => request.status === 'pending' && request.username.toLowerCase() === username)) {
+            return json(res, 409, { error: 'This username is already in use or awaiting approval.' })
+          }
+          user.username = username
+        }
         if (user.id === admin.id && input.role && input.role !== 'admin') return json(res, 400, { error: 'You cannot remove your own Admin role.' })
         if (user.id === admin.id && input.status && input.status !== 'active') return json(res, 400, { error: 'You cannot disable your own admin account.' })
         const removesAdmin = user.role === 'admin' && (input.role === 'user' || (input.status && input.status !== 'active'))
