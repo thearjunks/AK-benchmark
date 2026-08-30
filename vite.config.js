@@ -1184,7 +1184,7 @@ function publicSnapshotPlugin() {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
-  const fallbackMode = String(env.LIGHTHOUSE_FALLBACK_MODE || process.env.LIGHTHOUSE_FALLBACK_MODE || (process.env.PORT ? 'managed' : 'direct')).toLowerCase()
+  const fallbackMode = String(env.LIGHTHOUSE_FALLBACK_MODE || process.env.LIGHTHOUSE_FALLBACK_MODE || (mode === 'production' ? 'managed' : 'direct')).toLowerCase()
   const emailConfig = { user: env.SMTP_USER, password: env.SMTP_APP_PASSWORD }
   const accessConfig = {
     adminEmail: env.ADMIN_EMAIL || env.SMTP_USER,
