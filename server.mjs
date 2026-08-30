@@ -2,8 +2,10 @@ import { preview } from 'vite'
 import { access } from 'node:fs/promises'
 import path from 'node:path'
 
-const requestedPort = Number.parseInt(process.env.PORT || '56436', 10)
-const port = Number.isFinite(requestedPort) ? requestedPort : 56436
+// Managed Node hosts provide PORT. Use the conventional production fallback
+// instead of the dashboard's local development port.
+const requestedPort = Number.parseInt(process.env.PORT || '3000', 10)
+const port = Number.isFinite(requestedPort) ? requestedPort : 3000
 
 await access(path.join(process.cwd(), 'dist', 'index.html'))
 
