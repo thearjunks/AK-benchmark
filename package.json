@@ -9,6 +9,8 @@
     "preview": "vite preview --host 0.0.0.0",
     "start": "node server.mjs",
     "test:ppt": "node scripts/ppt-report-self-test.mjs",
+    "test:history": "node scripts/legacy-history-self-test.mjs",
+    "test:auth": "node scripts/auth-self-test.mjs",
     "test:single-site": "node scripts/single-site-self-test.mjs",
     "test:worker": "node scripts/lighthouse-worker.mjs --self-test"
   },

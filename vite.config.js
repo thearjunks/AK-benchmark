@@ -6,6 +6,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 import path from 'node:path'
 import { authPlugin } from './auth.mjs'
+import { parseLegacyDesktopHistory } from './legacy-history.mjs'
 
 const CATEGORIES = ['performance', 'accessibility', 'best-practices', 'seo']
 const SEVERITY_RANK = { Critical: 0, High: 1, Medium: 2, Low: 3 }
@@ -500,9 +501,12 @@ export function buildHistoryEmail(history) {
   }
   const groups = Array.from({ length: Math.ceil(domains.length / 3) }, (_, index) => domains.slice(index * 3, index * 3 + 3))
   const displayDate = value => new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(`${value}T12:00:00Z`))
-  const checkedAt = value => new Intl.DateTimeFormat('en-GB', {
+  const checkedAt = value => {
+    const record = typeof value === 'object' ? value : { checkedAt: value }
+    return record?.dateOnly ? `${displayDate(dateKey(record.checkedAt))} (imported date only)` : new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Asia/Kuwait', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
-  }).format(new Date(value))
+    }).format(new Date(record.checkedAt))
+  }
   const domainHeaders = domains.map((domain, index) => `<th class="domain" colspan="12" style="background:${domainColors[index % domainColors.length]}">${escapeHtml(domain)}<small>${escapeHtml(WEBSITE_META[domain]?.name || domain)}</small></th>`).join('')
   const deviceHeaders = domains.map((domain, index) => `<th class="device" colspan="5" style="background:${domainColors[index % domainColors.length]}">Mobile</th><th class="device" colspan="5" style="background:${domainColors[index % domainColors.length]}">Desktop</th><th class="device" colspan="2" style="background:${domainColors[index % domainColors.length]}">Audit details</th>`).join('')
   const metricHeaders = domains.map(() => `${['Mobile', 'Desktop'].map(() => emailMetrics.map(([, label]) => `<th>${escapeHtml(label)}</th>`).join('')).join('')}<th>Checked date &amp; time</th><th>Source URL</th>`).join('')
@@ -513,7 +517,7 @@ export function buildHistoryEmail(history) {
     }).join('')
     const records = ['Mobile', 'Web'].map(device => latest.get(`${date}|${domain}|${device}`)).filter(Boolean).sort((a, b) => new Date(b.checkedAt) - new Date(a.checkedAt))
     const record = records[0]
-    const audit = record ? `<td class="checked">${escapeHtml(checkedAt(record.checkedAt))}</td><td class="url"><a href="${escapeHtml(record.url || '')}">${escapeHtml(record.url || '')}</a></td>` : '<td class="missing">N/A</td><td class="missing">N/A</td>'
+    const audit = record ? `<td class="checked">${escapeHtml(checkedAt(record))}</td><td class="url"><a href="${escapeHtml(record.url || '')}">${escapeHtml(record.url || '')}</a></td>` : '<td class="missing">N/A</td><td class="missing">N/A</td>'
     return `${deviceCells}${audit}`
   }).join('')}</tr>`).join('')
   const generatedAt = new Date().toLocaleString('en-GB', { timeZone: 'Asia/Kuwait', dateStyle: 'medium', timeStyle: 'short' })
@@ -521,7 +525,7 @@ export function buildHistoryEmail(history) {
   const mobileCount = history.filter(record => record.device === 'Mobile').length
   const webCount = history.filter(record => record.device === 'Web').length
   const latestDate = history.reduce((latestValue, record) => !latestValue || new Date(record.checkedAt) > new Date(latestValue) ? record.checkedAt : latestValue, null)
-  const html = `<style>.wrap{font-family:Arial,sans-serif;color:#111827;background:#f7f7f8;padding:16px}.card{background:#fff;border:1px solid #dfe2e5;border-radius:12px;overflow:hidden}.head{padding:18px 20px}.eyebrow{font-size:10px;letter-spacing:1px;font-weight:700;color:#4f008c;text-transform:uppercase}.head h1{font-size:20px;margin:5px 0}.head p{font-size:10px;color:#778087;margin:0}.kpis{width:100%;border-collapse:collapse;border-top:1px solid #e2e4e6}.kpis td{padding:10px 12px;border-right:1px solid #e2e4e6}.kpis td:last-child{border-right:0}.kpis span{display:block;font-size:8px;color:#788187}.kpis b{display:block;font-size:18px;margin:4px 0}.kpis small{font-size:8px;color:#899196}.section{padding:15px}.section h2{font-size:15px;margin:3px 0}.section p{font-size:9px;color:#7b8489}.scroll{overflow-x:auto;border:1px solid #dfe2e4}.matrix{border-collapse:collapse;min-width:4200px;width:100%}.matrix th,.matrix td{border:1px solid #dde1e3;text-align:center;padding:7px 6px;font-size:9px}.matrix .datehead{background:#1d252d;color:#fff;min-width:90px}.matrix .domain{color:#fff;font-size:11px;padding:10px}.matrix .domain small{display:block;font-size:8px;margin-top:2px}.matrix .device{color:#fff;border-top-color:rgba(255,255,255,.5)}.matrix thead tr:nth-child(3) th{background:#fff1f4;min-width:56px}.matrix .date{background:#f6f7f8;white-space:nowrap}.score{font-weight:700}.great{background:#e8f7f2;color:#007956}.good{background:#f0e7f6;color:#4f008c}.warn{background:#fff3df;color:#a55e00}.bad{background:#ffedf1;color:#c80025}.missing{background:#f1f2f3;color:#8a9298}.checked{color:#737c81;white-space:nowrap}.url{text-align:left!important;min-width:180px}.url a{color:#4f008c;text-decoration:none}.foot{padding:11px 20px;border-top:1px solid #e5e6e8;font-size:8px;color:#8b9296}</style><div class="wrap"><div class="card"><div class="head"><div class="eyebrow">Score history</div><h1>Website Score History Report</h1><p>${escapeHtml(periodLabel)} · Six-website Mobile and Desktop scores. The filtered Excel workbook is attached.</p></div><table class="kpis" role="presentation"><tr><td><span>History records</span><b>${history.length}</b><small>Mobile and Web rows</small></td><td><span>Websites tracked</span><b>${domains.length}</b><small>Ordered competitor set</small></td><td><span>Mobile records</span><b>${mobileCount}</b><small>Google PageSpeed Mobile</small></td><td><span>Web records</span><b>${webCount}</b><small>Google PageSpeed Web</small></td><td><span>Latest history</span><b style="font-size:11px">${latestDate ? escapeHtml(checkedAt(latestDate)) : 'N/A'}</b><small>Asia/Kuwait time</small></td></tr></table><div class="section"><div class="eyebrow">Excel-style score archive</div><h2>Six-website history comparison</h2><p>Each row is one Kuwait calendar date. Scroll horizontally to compare every domain.</p><div class="scroll"><table class="matrix"><thead><tr><th class="datehead" rowspan="3">Date</th>${domainHeaders}</tr><tr>${deviceHeaders}</tr><tr>${metricHeaders}</tr></thead><tbody>${dataRows}</tbody></table></div></div><div class="foot">Generated ${escapeHtml(generatedAt)} Kuwait time · Google PageSpeed Insights</div></div></div>`
+  const html = `<style>.wrap{font-family:Arial,sans-serif;color:#111827;background:#f7f7f8;padding:16px}.card{background:#fff;border:1px solid #dfe2e5;border-radius:12px;overflow:hidden}.head{padding:18px 20px}.eyebrow{font-size:10px;letter-spacing:1px;font-weight:700;color:#4f008c;text-transform:uppercase}.head h1{font-size:20px;margin:5px 0}.head p{font-size:10px;color:#778087;margin:0}.kpis{width:100%;border-collapse:collapse;border-top:1px solid #e2e4e6}.kpis td{padding:10px 12px;border-right:1px solid #e2e4e6}.kpis td:last-child{border-right:0}.kpis span{display:block;font-size:8px;color:#788187}.kpis b{display:block;font-size:18px;margin:4px 0}.kpis small{font-size:8px;color:#899196}.section{padding:15px}.section h2{font-size:15px;margin:3px 0}.section p{font-size:9px;color:#7b8489}.scroll{overflow-x:auto;border:1px solid #dfe2e4}.matrix{border-collapse:collapse;min-width:4200px;width:100%}.matrix th,.matrix td{border:1px solid #dde1e3;text-align:center;padding:7px 6px;font-size:9px}.matrix .datehead{background:#1d252d;color:#fff;min-width:90px}.matrix .domain{color:#fff;font-size:11px;padding:10px}.matrix .domain small{display:block;font-size:8px;margin-top:2px}.matrix .device{color:#fff;border-top-color:rgba(255,255,255,.5)}.matrix thead tr:nth-child(3) th{background:#fff1f4;min-width:56px}.matrix .date{background:#f6f7f8;white-space:nowrap}.score{font-weight:700}.great{background:#e8f7f2;color:#007956}.good{background:#f0e7f6;color:#4f008c}.warn{background:#fff3df;color:#a55e00}.bad{background:#ffedf1;color:#c80025}.missing{background:#f1f2f3;color:#8a9298}.checked{color:#737c81;white-space:nowrap}.url{text-align:left!important;min-width:180px}.url a{color:#4f008c;text-decoration:none}.foot{padding:11px 20px;border-top:1px solid #e5e6e8;font-size:8px;color:#8b9296}</style><div class="wrap"><div class="card"><div class="head"><div class="eyebrow">Score history</div><h1>Website Score History Report</h1><p>${escapeHtml(periodLabel)} · Six-website Mobile and Desktop scores. The filtered Excel workbook is attached.</p></div><table class="kpis" role="presentation"><tr><td><span>History records</span><b>${history.length}</b><small>Imported and automatic rows</small></td><td><span>Websites tracked</span><b>${domains.length}</b><small>Ordered competitor set</small></td><td><span>Mobile records</span><b>${mobileCount}</b><small>Automatic Mobile</small></td><td><span>Web records</span><b>${webCount}</b><small>Imported and automatic Desktop</small></td><td><span>Latest history</span><b style="font-size:11px">${latestDate ? escapeHtml(checkedAt(latestDate)) : 'N/A'}</b><small>Asia/Kuwait time</small></td></tr></table><div class="section"><div class="eyebrow">Excel-style score archive</div><h2>Six-website history comparison</h2><p>Each row is one Kuwait calendar date. Scroll horizontally to compare every domain.</p><div class="scroll"><table class="matrix"><thead><tr><th class="datehead" rowspan="3">Date</th>${domainHeaders}</tr><tr>${deviceHeaders}</tr><tr>${metricHeaders}</tr></thead><tbody>${dataRows}</tbody></table></div></div><div class="foot">Generated ${escapeHtml(generatedAt)} Kuwait time · Saved benchmark history</div></div></div>`
   const text = `Website Score History Report\n\n${dates.map(date => `${displayDate(date)}\n${domains.map(domain => ['Mobile', 'Web'].map(device => { const record = latest.get(`${date}|${domain}|${device}`); return `${domain} ${device === 'Web' ? 'Desktop' : device}: ${emailMetrics.map(([key, label]) => `${label} ${record?.[key] ?? 'N/A'}`).join(' | ')}` }).join('\n')).join('\n')}`).join('\n\n')}`
   return { html, text, dates, domains, periodLabel }
 }
@@ -643,6 +647,11 @@ async function writeJson(file, value) {
   await writeFile(file, JSON.stringify(value, null, 2), 'utf8')
 }
 
+async function readLegacyHistory() {
+  const file = path.join(process.cwd(), 'data', 'legacy-desktop-history-2026.csv')
+  return parseLegacyDesktopHistory(await readFile(file, 'utf8'))
+}
+
 const WEBSITE_META = {
   'stc.com.kw': { name: 'STC Kuwait', page: 'Homepage', sheet: 'STC KW' },
   'kw.zain.com': { name: 'Zain Kuwait', page: 'Shop', sheet: 'Zain KW' },
@@ -684,7 +693,7 @@ function mergeHistory(current, records) {
   return [...byId.values()].sort((a, b) => new Date(b.checkedAt) - new Date(a.checkedAt))
 }
 
-async function buildHistoryWorkbook(history) {
+export async function buildHistoryWorkbook(history) {
   const workbook = new ExcelJS.Workbook()
   workbook.creator = 'STC Website Benchmark'
   workbook.created = new Date()
@@ -850,8 +859,8 @@ async function buildHistoryWorkbook(history) {
       const checkedCell = row.getCell(detailStart)
       const sourceCell = row.getCell(detailStart + 1)
       if (auditRecord) {
-        checkedCell.value = new Date(auditRecord.checkedAt)
-        checkedCell.numFmt = 'd-mmm-yyyy h:mm AM/PM'
+        checkedCell.value = auditRecord.dateOnly ? `${dateKey} (imported date only)` : new Date(auditRecord.checkedAt)
+        if (!auditRecord.dateOnly) checkedCell.numFmt = 'd-mmm-yyyy h:mm AM/PM'
         sourceCell.value = auditRecord.url || ''
       } else {
         checkedCell.value = 'N/A'
@@ -898,8 +907,8 @@ async function buildHistoryWorkbook(history) {
   rows.forEach(record => {
     const canonicalWebsite = WEBSITE_META[record.domain]?.name || record.website || record.domain
     const canonicalPage = WEBSITE_META[record.domain]?.page || record.page
-    const row = summary.addRow([canonicalWebsite, canonicalPage, record.device, new Date(record.checkedAt), record.seo, record.bestPractices, record.accessibility, record.performance, record.overall, record.url])
-    row.getCell(4).numFmt = 'd-mmm-yyyy h:mm AM/PM'
+    const row = summary.addRow([canonicalWebsite, canonicalPage, record.device, record.dateOnly ? `${historyDateKey(record.checkedAt)} (imported date only)` : new Date(record.checkedAt), record.seo, record.bestPractices, record.accessibility, record.performance, record.overall, record.url])
+    if (!record.dateOnly) row.getCell(4).numFmt = 'd-mmm-yyyy h:mm AM/PM'
     for (let column = 5; column <= 9; column += 1) applyScoreStyle(row.getCell(column), row.getCell(column).value)
   })
   summary.autoFilter = { from: 'A4', to: 'J4' }
@@ -919,7 +928,7 @@ async function buildHistoryWorkbook(history) {
       const deviceRows = rows.filter(record => record.domain === domain && record.device === device).sort((a, b) => new Date(a.checkedAt) - new Date(b.checkedAt))
       deviceRows.forEach(record => {
         const row = sheet.addRow([new Date(record.checkedAt), record.seo, record.bestPractices, record.accessibility, record.performance, record.overall])
-        row.getCell(1).numFmt = 'd-mmm-yyyy h:mm AM/PM'
+        row.getCell(1).numFmt = record.dateOnly ? 'd-mmm-yyyy' : 'd-mmm-yyyy h:mm AM/PM'
         for (let column = 2; column <= 6; column += 1) applyScoreStyle(row.getCell(column), row.getCell(column).value)
       })
       if (!deviceRows.length) {
@@ -944,6 +953,7 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
   const runtimeDir = process.env.BENCHMARK_DATA_DIR || defaultRuntimeDir
   const stateFile = path.join(runtimeDir, 'benchmark-automation-state.json')
   const settingsFile = path.join(runtimeDir, 'benchmark-email-settings.json')
+  const historyBackupFile = path.join(runtimeDir, 'website-benchmark-score-history.xlsx')
   const transporter = createGmailTransporter(emailConfig)
   let timer = null
   let monthlyTimer = null
@@ -966,6 +976,10 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
 
   const persistState = () => writeJson(stateFile, state)
   const persistSettings = () => writeJson(settingsFile, settings)
+  const persistHistoryBackup = async () => {
+    await mkdir(path.dirname(historyBackupFile), { recursive: true })
+    await writeFile(historyBackupFile, Buffer.from(await buildHistoryWorkbook(state.history || [])))
+  }
 
   function verifyWorkerSignature(body, signature) {
     const expected = `sha256=${createHmac('sha256', deploymentConfig.lighthouseCallbackToken).update(body).digest('hex')}`
@@ -1041,6 +1055,7 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
   async function initialize() {
     const bundledState = await readJson(bundledStateFile, state)
     state = await readJson(stateFile, bundledState)
+    const legacyHistory = await readLegacyHistory()
     const resumeInterruptedRun = state.status === 'running'
     settings = { ...settings, ...await readJson(settingsFile, {}) }
     if (!settings.recipients.length && deploymentConfig.recipients?.length) settings.recipients = deploymentConfig.recipients
@@ -1048,11 +1063,12 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
     settings.monthlyHistoryEnabled = settings.monthlyHistoryEnabled !== false
     settings.reportType = settings.reportType === 'history' ? 'history' : 'benchmark'
     state.standardUrls = STANDARD_URLS
-    state.history = Array.isArray(state.history) ? state.history : []
+    state.history = mergeHistory(legacyHistory, Array.isArray(state.history) ? state.history : [])
     const seedSites = [...(Array.isArray(state.sites) ? state.sites : []), ...(state.progress || []).map(item => item.latestSite).filter(Boolean)]
     state.history = mergeHistory(state.history, seedSites.flatMap(historyRecordsForSite))
     state.nextRunAt = nextKuwaitRun(settings.time)
     await persistState()
+    await persistHistoryBackup()
     initialized = true
     initializationError = null
     scheduleNextRun()
@@ -1148,6 +1164,7 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
           state.issues = [...stagedIssues]
           state.progress[index] = { ...state.progress[index], domain: result.site.domain, status: 'complete', overall: result.site.overall, checkedAt: result.site.scannedAt, latestSite: result.site }
           await persistState()
+          await persistHistoryBackup()
         }
 
         if (failures.length) throw new Error(failures.join(' | '))
@@ -1246,6 +1263,7 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
           state.emailStatus = { status: 'blocked', message: 'Email not sent because the complete score matrix was not available.' }
         }
         await persistState()
+        await persistHistoryBackup()
       } catch (error) {
         const failedAt = new Date().toISOString()
         const message = cleanText(error.message || 'Score check failed.')
@@ -1440,7 +1458,7 @@ function publicSnapshotPlugin() {
     apply: 'build',
     async generateBundle() {
       const saved = await readJson(path.join(process.cwd(), 'work', 'benchmark-automation-state.json'), {})
-      const history = Array.isArray(saved.history) ? saved.history : []
+      const history = mergeHistory(await readLegacyHistory(), Array.isArray(saved.history) ? saved.history : [])
       const { history: ignoredHistory, ...publicState } = saved
       this.emitFile({
         type: 'asset',

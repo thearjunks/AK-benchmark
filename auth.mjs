@@ -56,6 +56,12 @@ function publicUser(user) {
   return safe
 }
 
+function publicRequest(request) {
+  if (!request) return null
+  const { passwordHash: ignoredPassword, ...safe } = request
+  return safe
+}
+
 function cookieMap(header = '') {
   return Object.fromEntries(header.split(';').map(part => part.trim().split('=').map(value => decodeURIComponent(value))).filter(pair => pair.length === 2))
 }
@@ -162,6 +168,19 @@ export function authPlugin(config = {}) {
     })
   }
 
+  async function sendApprovalNotification(user, req) {
+    if (config.notificationsEnabled === false || !transporter) return false
+    const proto = req.headers['x-forwarded-proto'] || (process.env.NODE_ENV === 'production' ? 'https' : 'http')
+    const origin = config.publicAppUrl || `${proto}://${req.headers.host}`
+    await transporter.sendMail({
+      from: `STC Website Benchmark <${config.smtpUser}>`, to: user.email,
+      subject: 'Website Benchmark Dashboard access approved',
+      text: `Your access request was approved. Sign in with the username and password you selected: ${origin}`,
+      html: `<div style="font-family:Arial,sans-serif"><h2>Access approved</h2><p>Hello ${escapeHtml(user.username)},</p><p>Your Website Benchmark Dashboard access request was approved. Sign in with the username and password you selected.</p><p><a href="${escapeHtml(origin)}" style="display:inline-block;padding:11px 18px;border-radius:7px;background:#4f008c;color:#fff;text-decoration:none">Open dashboard</a></p></div>`
+    })
+    return true
+  }
+
   function requireAdmin(req, res) {
     const user = sessionUser(req)
     if (!user) { json(res, 401, { error: 'Sign in is required.' }); return null }
@@ -193,17 +212,20 @@ export function authPlugin(config = {}) {
       }
       if (requestPath === '/api/auth/request-access' && req.method === 'POST') {
         const input = await bodyJson(req)
+        const requestedPassword = String(input.password || '')
         const request = {
           id: randomBytes(12).toString('hex'), username: clean(input.username, 80), mobile: clean(input.mobile, 30),
           department: clean(input.department, 100), email: clean(input.email).toLowerCase(), status: 'pending',
           requestedAt: new Date().toISOString(), reviewedAt: null, reviewedBy: null
         }
-        if (!request.username || !request.department || !/^\+?[0-9 ()-]{8,20}$/.test(request.mobile) || !stcEmailPattern.test(request.email)) {
-          return json(res, 400, { error: 'Enter a username, valid mobile number, department, and valid STC email ID.' })
-        }
+        if (!/^[a-z]+$/.test(request.username)) return json(res, 400, { error: 'Username must contain lowercase letters only.' })
+        if (!request.department || !/^\+?[0-9 ()-]{8,20}$/.test(request.mobile) || !stcEmailPattern.test(request.email)) return json(res, 400, { error: 'Enter a valid mobile number, department, and STC email ID.' })
+        if (requestedPassword.length < 10) return json(res, 400, { error: 'Use a password with at least 10 characters.' })
+        if (requestedPassword !== String(input.confirmPassword || '')) return json(res, 400, { error: 'Password and Confirm Password must match.' })
         if (store.users.some(user => user.email === request.email || user.username.toLowerCase() === request.username.toLowerCase()) || store.requests.some(item => item.status === 'pending' && (item.email === request.email || item.username.toLowerCase() === request.username.toLowerCase()))) {
           return json(res, 409, { error: 'An account or pending request already exists for this user.' })
         }
+        request.passwordHash = await passwordHash(requestedPassword)
         store.requests.unshift(request)
         await persist()
         let adminNotified = false
@@ -234,6 +256,7 @@ export function authPlugin(config = {}) {
         const user = store.users.find(item => item.inviteTokenHash === tokenHash(rawToken) && item.inviteExpiresAt && new Date(item.inviteExpiresAt).getTime() > Date.now())
         if (!user) return json(res, 400, { error: 'This invitation is invalid or has expired.' })
         if (String(input.password || '').length < 10) return json(res, 400, { error: 'Use a password with at least 10 characters.' })
+        if (String(input.password || '') !== String(input.confirmPassword || '')) return json(res, 400, { error: 'Password and Confirm Password must match.' })
         user.passwordHash = await passwordHash(String(input.password))
         user.status = 'active'; user.inviteTokenHash = null; user.inviteExpiresAt = null; user.updatedAt = new Date().toISOString()
         await persist()
@@ -252,7 +275,7 @@ export function authPlugin(config = {}) {
 
       if (requestPath === '/api/admin/access' && req.method === 'GET') {
         if (!requireAdmin(req, res)) return
-        return json(res, 200, { requests: store.requests, users: store.users.map(publicUser) })
+        return json(res, 200, { requests: store.requests.map(publicRequest), users: store.users.map(publicUser) })
       }
       const decisionMatch = requestPath.match(/^\/api\/admin\/access-requests\/([^/]+)\/decision$/)
       if (decisionMatch && req.method === 'POST') {
@@ -265,21 +288,42 @@ export function authPlugin(config = {}) {
         request.reviewedAt = new Date().toISOString(); request.reviewedBy = admin.id
         let invitationSent = false
         if (input.decision === 'approve') {
-          const rawToken = randomBytes(32).toString('base64url')
+          const hasRequestedPassword = Boolean(request.passwordHash)
+          const rawToken = hasRequestedPassword ? null : randomBytes(32).toString('base64url')
           const user = {
             id: randomBytes(12).toString('hex'), username: request.username, email: request.email, mobile: request.mobile,
-            department: request.department, role: input.role === 'admin' ? 'admin' : 'user', status: 'invited',
+            department: request.department, role: input.role === 'admin' ? 'admin' : 'user', status: hasRequestedPassword ? 'active' : 'invited',
             sections: Array.isArray(input.sections) ? input.sections.filter(section => ALL_SECTIONS.includes(section)) : ['overview'],
             canSendEmail: input.canSendEmail === true, canDownload: input.canDownload === true,
-            passwordHash: null, inviteTokenHash: tokenHash(rawToken), inviteExpiresAt: new Date(Date.now() + INVITE_TTL_MS).toISOString(),
+            passwordHash: request.passwordHash || null, inviteTokenHash: rawToken ? tokenHash(rawToken) : null, inviteExpiresAt: rawToken ? new Date(Date.now() + INVITE_TTL_MS).toISOString() : null,
             createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
           }
           if (user.role === 'admin') { user.sections = [...ALL_SECTIONS]; user.canSendEmail = true; user.canDownload = true }
           store.users.push(user)
+          request.passwordHash = null
           await persist()
-          try { invitationSent = await sendInvitation(user, rawToken, req) !== false } catch { /* Admin can resend after SMTP recovery */ }
-        } else await persist()
-        return json(res, 200, { request, invitationSent })
+          try { invitationSent = hasRequestedPassword ? await sendApprovalNotification(user, req) !== false : await sendInvitation(user, rawToken, req) !== false } catch { /* account remains available after email failure */ }
+        } else { request.passwordHash = null; await persist() }
+        return json(res, 200, { request: publicRequest(request), invitationSent, activated: input.decision === 'approve' && Boolean(store.users.at(-1)?.passwordHash) })
+      }
+      if (requestPath === '/api/admin/password-reset' && req.method === 'POST') {
+        const admin = requireAdmin(req, res); if (!admin) return
+        const input = await bodyJson(req)
+        const nextPassword = String(input.password || '')
+        if (nextPassword.length < 10) return json(res, 400, { error: 'Use a password with at least 10 characters.' })
+        if (nextPassword !== String(input.confirmPassword || '')) return json(res, 400, { error: 'Password and Confirm Password must match.' })
+        const targets = input.scope === 'all' ? [...store.users] : store.users.filter(user => user.id === input.userId)
+        if (!targets.length) return json(res, 404, { error: 'No users were selected for password reset.' })
+        for (const user of targets) {
+          user.passwordHash = await passwordHash(nextPassword)
+          if (user.status === 'invited') user.status = 'active'
+          user.inviteTokenHash = null; user.inviteExpiresAt = null; user.updatedAt = new Date().toISOString()
+        }
+        const targetIds = new Set(targets.map(user => user.id))
+        const currentToken = cookieMap(req.headers.cookie || '').benchmark_session
+        for (const [token, session] of sessions) if (targetIds.has(session.userId) && token !== currentToken) sessions.delete(token)
+        await persist()
+        return json(res, 200, { reset: true, scope: input.scope === 'all' ? 'all' : 'user', users: targets.length })
       }
       const userMatch = requestPath.match(/^\/api\/admin\/users\/([^/]+)$/)
       if (userMatch && req.method === 'PATCH') {
@@ -313,6 +357,18 @@ export function authPlugin(config = {}) {
         let invitationSent = false
         try { invitationSent = await sendInvitation(user, rawToken, req) !== false } catch { /* invitation stays available for another resend */ }
         return json(res, invitationSent ? 200 : 503, { invitationSent, error: invitationSent ? undefined : 'Invitation saved, but email delivery failed.' })
+      }
+      if (userMatch && req.method === 'DELETE') {
+        const admin = requireAdmin(req, res); if (!admin) return
+        const user = store.users.find(item => item.id === userMatch[1])
+        if (!user) return json(res, 404, { error: 'User not found.' })
+        if (user.id === admin.id) return json(res, 400, { error: 'You cannot delete your own Admin account.' })
+        const activeAdmins = store.users.filter(item => item.role === 'admin' && item.status === 'active')
+        if (user.role === 'admin' && user.status === 'active' && activeAdmins.length <= 1) return json(res, 400, { error: 'At least one active Admin account is required.' })
+        store.users = store.users.filter(item => item.id !== user.id)
+        for (const [token, session] of sessions) if (session.userId === user.id) sessions.delete(token)
+        await persist()
+        return json(res, 200, { deleted: true, user: publicUser(user) })
       }
 
       if (requestPath.startsWith('/api/admin/')) return json(res, 404, { error: 'Admin endpoint not found.' })

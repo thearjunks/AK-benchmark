@@ -2,6 +2,14 @@ import PptxGenJS from 'pptxgenjs'
 
 export const PPT_MOBILE = '#e6007e'
 export const PPT_DESKTOP = '#4f008c'
+export const PPT_DOMAIN_ORDER = ['stc.com.kw', 'kw.zain.com', 'ooredoo.com.kw', 'stc.com.bh', 'stc.com.sa', 'virgin.com']
+
+export function orderPptDomains(domains = []) {
+  return [
+    ...PPT_DOMAIN_ORDER.filter(domain => domains.includes(domain)),
+    ...domains.filter(domain => !PPT_DOMAIN_ORDER.includes(domain))
+  ]
+}
 
 const MOBILE = 'E6007E'
 const DESKTOP = '4F008C'
@@ -129,7 +137,7 @@ function addHeader(pptx, slide) {
 }
 
 function addFooter(slide) {
-  slide.addText('Source: saved Google PageSpeed score history · Asia/Kuwait', { x: 8.5, y: 7.18, w: 4.35, h: .15, fontFace: 'Arial', fontSize: 7, color: MUTED, align: 'right', margin: 0 })
+  slide.addText('Source: saved benchmark score history · Asia/Kuwait', { x: 8.5, y: 7.18, w: 4.35, h: .15, fontFace: 'Arial', fontSize: 7, color: MUTED, align: 'right', margin: 0 })
 }
 
 function addKpi(pptx, slide, x, title, value, detail, color = INK) {

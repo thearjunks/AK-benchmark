@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { CalendarRange, Download, FileChartColumn, Monitor, Smartphone } from 'lucide-react'
-import { buildPptReportModel, downloadPptReport, historyRange, PPT_DESKTOP, PPT_MOBILE } from './pptReport.js'
+import { buildPptReportModel, downloadPptReport, historyRange, orderPptDomains, PPT_DESKTOP, PPT_MOBILE } from './pptReport.js'
 
 function valueLabel(value) {
   return Number.isFinite(value) ? Number.isInteger(value) ? value : value.toFixed(1) : 'N/A'
@@ -33,9 +33,10 @@ function ComparisonChart({ comparison }) {
 
 export default function PptReport({ history, domains, labels, canDownload, notify }) {
   const range = useMemo(() => historyRange(history), [history])
+  const orderedDomains = useMemo(() => orderPptDomains(domains), [domains])
   const [fromDate, setFromDate] = useState('')
   const [toDate, setToDate] = useState('')
-  const [selectedDomain, setSelectedDomain] = useState(domains[0] || '')
+  const [selectedDomain, setSelectedDomain] = useState(orderedDomains[0] || '')
   const [periodPreset, setPeriodPreset] = useState('all')
   const [downloading, setDownloading] = useState(false)
 
@@ -44,10 +45,10 @@ export default function PptReport({ history, domains, labels, canDownload, notif
     setFromDate(current => current || range.min)
     setToDate(current => current || range.max)
   }, [range.min, range.max])
-  useEffect(() => { if (!domains.includes(selectedDomain)) setSelectedDomain(domains[0] || '') }, [domains, selectedDomain])
+  useEffect(() => { if (!orderedDomains.includes(selectedDomain)) setSelectedDomain(orderedDomains[0] || '') }, [orderedDomains, selectedDomain])
 
   const monthOptions = useMemo(() => [...new Set(range.dates.map(date => date.slice(0, 7)))].sort().reverse(), [range.dates])
-  const model = useMemo(() => buildPptReportModel(history, domains, labels, fromDate, toDate), [history, domains, labels, fromDate, toDate])
+  const model = useMemo(() => buildPptReportModel(history, orderedDomains, labels, fromDate, toDate), [history, orderedDomains, labels, fromDate, toDate])
   const site = model.sites.find(item => item.domain === selectedDomain) || model.sites[0]
 
   function selectPreset(value) {
@@ -86,7 +87,7 @@ export default function PptReport({ history, domains, labels, canDownload, notif
       <label><span>Reporting period</span><div><CalendarRange size={15}/><select value={periodPreset} onChange={event => selectPreset(event.target.value)}><option value="all">All saved history</option><option value="last30">Latest 30 days</option>{monthOptions.map(month => <option value={`month:${month}`} key={month}>{new Intl.DateTimeFormat('en-GB',{month:'long',year:'numeric'}).format(new Date(`${month}-01T12:00:00Z`))}</option>)}<option value="custom">Custom date range</option></select></div></label>
       <label><span>From Date</span><input type="date" max={toDate || range.max} value={fromDate} onChange={event => { setPeriodPreset('custom'); setFromDate(event.target.value) }}/></label>
       <label><span>To Date</span><input type="date" min={fromDate || range.min} max={range.max} value={toDate} onChange={event => { setPeriodPreset('custom'); setToDate(event.target.value) }}/></label>
-      <label><span>Website view</span><select value={selectedDomain} onChange={event => setSelectedDomain(event.target.value)}>{domains.map(domain => <option value={domain} key={domain}>{labels[domain] || domain}</option>)}</select></label>
+      <label><span>Website view</span><select value={selectedDomain} onChange={event => setSelectedDomain(event.target.value)}>{orderedDomains.map(domain => <option value={domain} key={domain}>{labels[domain] || domain}</option>)}</select></label>
       <div className="ppt-period-summary"><span>Selected report</span><strong>{model.periodLabel}</strong><small>{model.scanDates?.length || 0} scan dates · {model.records.length} records</small></div>
     </section>
 
@@ -98,7 +99,7 @@ export default function PptReport({ history, domains, labels, canDownload, notif
         <p className="ppt-takeaway"><b>Key takeaway:</b> {site.takeaway}</p>
       </section>
       <section className="ppt-comparison"><header><div><span>Period comparison</span><h2>All six websites at a glance</h2><p>Average performance scores for the selected reporting period.</p></div><small>0–100 score</small></header><ComparisonChart comparison={model.comparison}/></section>
-      <p className="ppt-source">Source: saved Google PageSpeed score history · Asia/Kuwait timezone · Missing scans remain N/A.</p>
+      <p className="ppt-source">Source: saved benchmark score history · Imported desktop records retain date-only metadata · Asia/Kuwait timezone · Missing scans remain N/A.</p>
     </> : <section className="ppt-empty"><CalendarRange size={34}/><strong>No data in this period</strong><span>Choose a date range containing completed score history.</span></section>}
   </div>
 }
