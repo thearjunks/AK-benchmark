@@ -328,6 +328,23 @@ function workerScore(value, label) {
   return value
 }
 
+function hasCompleteDeviceScores(site, device) {
+  return site?.coverage?.[device] === true && DEVICE_METRICS.every(metric => typeof site.deviceScores?.[device]?.[metric] === 'number')
+}
+
+function isAcceptedWorkerFinalUrl(value, expectedUrl) {
+  const final = new URL(value)
+  const expected = new URL(expectedUrl)
+  const finalHost = final.hostname.replace(/^www\./, '')
+  const expectedHost = expected.hostname.replace(/^www\./, '')
+  if (finalHost !== expectedHost) return false
+  const route = `${final.pathname}${final.search}`
+  if (!/(?:error|login|signin|auth)[=_/-]?/i.test(route)) return true
+  // Zain adds this query after rendering the public shop in automated Chrome.
+  // Accept only this exact same-path and same-domain redirect.
+  return expectedHost === 'kw.zain.com' && final.pathname === expected.pathname && final.search === '?error=login_required'
+}
+
 function workerPayloadToAnalysis(payload, expectedUrl) {
   if (!payload?.ok || new URL(payload.url).href !== new URL(expectedUrl).href) throw new Error('Lighthouse worker returned a mismatched URL.')
   const expectedHost = new URL(expectedUrl).hostname.replace(/^www\./, '')
@@ -339,8 +356,9 @@ function workerPayloadToAnalysis(payload, expectedUrl) {
 
   for (const device of ['mobile', 'desktop']) {
     const result = payload.devices?.[device]
+    if (!result) continue
     const final = new URL(result?.finalUrl || '')
-    if (final.hostname.replace(/^www\./, '') !== expectedHost || /(?:error|login|signin|auth)[=_/-]?/i.test(`${final.pathname}${final.search}`)) {
+    if (final.hostname.replace(/^www\./, '') !== expectedHost || !isAcceptedWorkerFinalUrl(final.href, expectedUrl)) {
       throw new Error(`Lighthouse worker reached an invalid ${device} final URL.`)
     }
     devices[device] = {
@@ -355,16 +373,21 @@ function workerPayloadToAnalysis(payload, expectedUrl) {
     coreWebVitals ??= Number.isInteger(result.coreWebVitals) ? result.coreWebVitals : null
   }
 
-  const categoryAverage = key => Math.round((devices.mobile[key] + devices.desktop[key]) / 2)
+  if (!Object.keys(devices).length) throw new Error('Lighthouse worker did not return a usable Mobile or Web result.')
+
+  const categoryAverage = key => {
+    const values = ['mobile', 'desktop'].map(device => devices[device]?.[key]).filter(value => typeof value === 'number')
+    return values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : null
+  }
   const scores = {
     performance: categoryAverage('performance'), seo: categoryAverage('seo'),
     accessibility: categoryAverage('accessibility'), bestPractices: categoryAverage('bestPractices'),
-    coreWebVitals, mobile: devices.mobile.performance, desktop: devices.desktop.performance
+    coreWebVitals, mobile: devices.mobile?.performance ?? null, desktop: devices.desktop?.performance ?? null
   }
   const validScores = Object.values(scores).filter(value => typeof value === 'number')
   const overall = Math.round(validScores.reduce((sum, value) => sum + value, 0) / validScores.length)
   const domain = new URL(finalUrl).hostname.replace(/^www\./, '')
-  const issues = ['mobile', 'desktop'].flatMap(device => (payload.devices[device].issues || []).slice(0, 25).map((issue, index) => ({
+  const issues = ['mobile', 'desktop'].flatMap(device => (payload.devices?.[device]?.issues || []).slice(0, 25).map((issue, index) => ({
     id: `${domain}-${device}-worker-${index}`,
     site: domain,
     device: device === 'mobile' ? 'Mobile' : 'Web',
@@ -382,11 +405,77 @@ function workerPayloadToAnalysis(payload, expectedUrl) {
       scannedAt: new Date().toISOString(), sourceFetchTime,
       status: overall >= 90 ? 'Excellent' : overall >= 75 ? 'Good' : overall >= 50 ? 'Needs work' : 'Poor',
       coreWebVitalsSource: coreWebVitals === null ? null : 'GitHub Lighthouse lab data',
-      lighthouseVersion, coverage: { mobile: true, desktop: true },
-      auditSources: { mobile: 'GitHub Actions Lighthouse', desktop: 'GitHub Actions Lighthouse' },
-      scanWarning: null, color: null
+      lighthouseVersion, coverage: { mobile: Boolean(devices.mobile), desktop: Boolean(devices.desktop) },
+      auditSources: {
+        mobile: devices.mobile ? 'GitHub Actions Lighthouse' : null,
+        desktop: devices.desktop ? 'GitHub Actions Lighthouse' : null
+      },
+      scanWarning: payload.errors ? Object.entries(payload.errors).map(([device, message]) => `${device}: ${cleanText(message)}`).join(' | ') : null,
+      color: null
     },
     issues: issues.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity])
+  }
+}
+
+export function mergeAuditAnalyses(primary, fallback, expectedUrl) {
+  if (!primary) return fallback
+  if (!fallback) return primary
+  const expected = new URL(expectedUrl)
+  const domain = expected.hostname.replace(/^www\./, '')
+  const selected = {}
+  for (const device of ['mobile', 'desktop']) {
+    selected[device] = hasCompleteDeviceScores(primary.site, device) ? primary : fallback
+  }
+  const deviceScores = {
+    mobile: selected.mobile.site?.deviceScores?.mobile || {},
+    desktop: selected.desktop.site?.deviceScores?.desktop || {}
+  }
+  const coverage = {
+    mobile: hasCompleteDeviceScores(selected.mobile.site, 'mobile'),
+    desktop: hasCompleteDeviceScores(selected.desktop.site, 'desktop')
+  }
+  const categoryAverage = key => {
+    const values = ['mobile', 'desktop'].map(device => deviceScores[device]?.[key]).filter(value => typeof value === 'number')
+    return values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : null
+  }
+  const coreWebVitals = selected.mobile.site?.scores?.coreWebVitals ?? selected.desktop.site?.scores?.coreWebVitals ?? null
+  const scores = {
+    performance: categoryAverage('performance'),
+    seo: categoryAverage('seo'),
+    accessibility: categoryAverage('accessibility'),
+    bestPractices: categoryAverage('bestPractices'),
+    coreWebVitals,
+    mobile: deviceScores.mobile?.performance ?? null,
+    desktop: deviceScores.desktop?.performance ?? null
+  }
+  const validScores = Object.values(scores).filter(value => typeof value === 'number')
+  const overall = validScores.length ? Math.round(validScores.reduce((sum, value) => sum + value, 0) / validScores.length) : null
+  const selectedIssues = ['mobile', 'desktop'].flatMap(device => {
+    const label = device === 'mobile' ? 'Mobile' : 'Web'
+    return (selected[device].issues || []).filter(issue => issue.device === label)
+  })
+  const missing = ['mobile', 'desktop'].filter(device => !coverage[device])
+  return {
+    site: {
+      ...primary.site,
+      id: domain,
+      domain,
+      url: expected.href,
+      overall,
+      scores,
+      deviceScores,
+      coverage,
+      auditSources: {
+        mobile: selected.mobile.site?.auditSources?.mobile || null,
+        desktop: selected.desktop.site?.auditSources?.desktop || null
+      },
+      sourceFetchTime: selected.mobile.site?.sourceFetchTime || selected.desktop.site?.sourceFetchTime || null,
+      lighthouseVersion: selected.mobile.site?.lighthouseVersion || selected.desktop.site?.lighthouseVersion || null,
+      coreWebVitalsSource: selected.mobile.site?.coreWebVitalsSource || selected.desktop.site?.coreWebVitalsSource || null,
+      status: overall >= 90 ? 'Excellent' : overall >= 75 ? 'Good' : overall >= 50 ? 'Needs work' : 'Poor',
+      scanWarning: missing.length ? `${missing.join(' and ')} score columns are incomplete.` : null
+    },
+    issues: selectedIssues.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity])
   }
 }
 
@@ -1000,8 +1089,8 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
     const result = new Promise((resolve, reject) => { resolveRun = resolve; rejectRun = reject })
     const timer = setTimeout(() => {
       pendingWorkerRuns.delete(requestId)
-      rejectRun(new Error('GitHub Lighthouse worker timed out after 12 minutes.'))
-    }, 12 * 60 * 1000)
+      rejectRun(new Error('GitHub Lighthouse worker timed out after 14 minutes.'))
+    }, 14 * 60 * 1000)
     pendingWorkerRuns.set(requestId, { url: new URL(url).href, resolve: resolveRun, reject: rejectRun, timer })
 
     const callbackUrl = new URL('/api/lighthouse-worker/callback', deploymentConfig.publicAppUrl).href
@@ -1138,21 +1227,33 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
           const url = STANDARD_URLS[index]
           const canUseWorker = workerConfigured && new URL(url).hostname.replace(/^www\./, '') === 'kw.zain.com'
           let result = null
+          let partialResult = null
           let lastError = null
           for (let attempt = 1; attempt <= (canUseWorker ? 1 : 2); attempt += 1) {
             state.progress[index] = { ...state.progress[index], status: 'scanning', attempt }
             await persistState()
             try {
               const candidate = await analyzeWebsite(url, apiKey, deploymentConfig.lighthouseFallbackMode)
-              if (!hasCompleteScoreMatrix(candidate.site)) throw new Error('Mobile or Web score columns are incomplete.')
-              result = candidate
-              break
+              partialResult = mergeAuditAnalyses(partialResult, candidate, url)
+              if (hasCompleteScoreMatrix(partialResult.site)) {
+                result = partialResult
+                break
+              }
+              lastError = new Error('Mobile or Web score columns are incomplete.')
             } catch (error) { lastError = error }
           }
           if (!result && canUseWorker) {
             state.progress[index] = { ...state.progress[index], status: 'scanning', message: 'Waiting for GitHub Actions Lighthouse.' }
             await persistState()
-            try { result = await runGitHubLighthouse(url) } catch (error) { lastError = error }
+            try {
+              const workerResult = await runGitHubLighthouse(url)
+              result = mergeAuditAnalyses(partialResult, workerResult, url)
+              if (!hasCompleteScoreMatrix(result.site)) {
+                partialResult = result
+                result = null
+                lastError = new Error('PageSpeed and Lighthouse did not complete both Mobile and Web score columns.')
+              }
+            } catch (error) { lastError = error }
           }
           if (!result) {
             state.progress[index] = { ...state.progress[index], status: 'failed', message: cleanText(lastError?.message || 'Score check failed.') }
@@ -1219,6 +1320,7 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
       await persistState()
       try {
         let result
+        let partialResult
         let lastError
         const canUseWorker = workerConfigured && domain === 'kw.zain.com'
         for (let attempt = 1; attempt <= (canUseWorker ? 1 : 2); attempt += 1) {
@@ -1226,15 +1328,26 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
           await persistState()
           try {
             const candidate = await analyzeWebsite(standardUrl, apiKey, deploymentConfig.lighthouseFallbackMode)
-            if (!hasCompleteScoreMatrix(candidate.site)) throw new Error('Mobile or Web score columns are incomplete.')
-            result = candidate
-            break
+            partialResult = mergeAuditAnalyses(partialResult, candidate, standardUrl)
+            if (hasCompleteScoreMatrix(partialResult.site)) {
+              result = partialResult
+              break
+            }
+            lastError = new Error('Mobile or Web score columns are incomplete.')
           } catch (error) { lastError = error }
         }
         if (!result && canUseWorker) {
           state.progress[index] = { ...state.progress[index], message: 'Waiting for GitHub Actions Lighthouse.' }
           await persistState()
-          try { result = await runGitHubLighthouse(standardUrl) } catch (error) { lastError = error }
+          try {
+            const workerResult = await runGitHubLighthouse(standardUrl)
+            result = mergeAuditAnalyses(partialResult, workerResult, standardUrl)
+            if (!hasCompleteScoreMatrix(result.site)) {
+              partialResult = result
+              result = null
+              lastError = new Error('PageSpeed and Lighthouse did not complete both Mobile and Web score columns.')
+            }
+          } catch (error) { lastError = error }
         }
         if (!result) throw lastError || new Error('Score check failed.')
 

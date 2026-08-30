@@ -11,7 +11,10 @@ export function validateFinalUrl(value, expectedUrl) {
   const final = new URL(value)
   const expected = new URL(expectedUrl)
   if (final.hostname.replace(/^www\./, '') !== expected.hostname.replace(/^www\./, '')) throw new Error('Lighthouse reached a different domain.')
-  if (/(?:error|login|signin|auth)[=_/-]?/i.test(`${final.pathname}${final.search}`)) throw new Error('Lighthouse reached a login or error page.')
+  const errorRoute = /(?:error|login|signin|auth)[=_/-]?/i.test(`${final.pathname}${final.search}`)
+  const expectedHost = expected.hostname.replace(/^www\./, '')
+  const knownZainRedirect = expectedHost === 'kw.zain.com' && final.pathname === expected.pathname && final.search === '?error=login_required'
+  if (errorRoute && !knownZainRedirect) throw new Error('Lighthouse reached a login or error page.')
   return final.href
 }
 
@@ -48,7 +51,7 @@ function issuesFrom(lhr) {
   }).filter(Boolean).sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]).slice(0, 25)
 }
 
-async function audit(url, strategy) {
+async function auditOnce(url, strategy) {
   const chrome = await launch({ chromeFlags: ['--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--ignore-certificate-errors', '--window-size=1440,900'] })
   let auditTimer
   try {
@@ -60,7 +63,7 @@ async function audit(url, strategy) {
         ? { mobile: true, width: 412, height: 823, deviceScaleFactor: 1.75, disabled: false }
         : { mobile: false, width: 1440, height: 900, deviceScaleFactor: 1, disabled: false }
     })
-    const result = await Promise.race([run, new Promise((_, reject) => { auditTimer = setTimeout(() => reject(new Error(`${strategy} Lighthouse timed out.`)), 240_000) })])
+    const result = await Promise.race([run, new Promise((_, reject) => { auditTimer = setTimeout(() => reject(new Error(`${strategy} Lighthouse timed out.`)), 150_000) })])
     const lhr = result?.lhr
     if (!lhr) throw new Error(`${strategy} Lighthouse returned no report.`)
     if (lhr.runtimeError?.message) throw new Error(lhr.runtimeError.message)
@@ -82,6 +85,18 @@ async function audit(url, strategy) {
   }
 }
 
+async function audit(url, strategy, attempts = 2) {
+  let lastError
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try { return await auditOnce(url, strategy) }
+    catch (error) {
+      lastError = error
+      if (attempt < attempts) await new Promise(resolve => setTimeout(resolve, attempt * 3_000))
+    }
+  }
+  throw lastError
+}
+
 async function postCallback(callbackUrl, token, payload) {
   const body = JSON.stringify(payload)
   const signature = `sha256=${createHmac('sha256', token).update(body).digest('hex')}`
@@ -92,7 +107,8 @@ async function postCallback(callbackUrl, token, payload) {
 async function main() {
   if (process.argv.includes('--self-test')) {
     assert.match(validateFinalUrl('https://www.kw.zain.com/en/shop', 'https://www.kw.zain.com/en/shop'), /kw\.zain\.com/)
-    assert.throws(() => validateFinalUrl('https://www.kw.zain.com/en/shop?error=login_required', 'https://www.kw.zain.com/en/shop'))
+    assert.match(validateFinalUrl('https://www.kw.zain.com/en/shop?error=login_required', 'https://www.kw.zain.com/en/shop'), /login_required/)
+    assert.throws(() => validateFinalUrl('https://www.kw.zain.com/en/login?error=login_required', 'https://www.kw.zain.com/en/shop'))
     assert.throws(() => validateFinalUrl('https://example.com/', 'https://www.kw.zain.com/en/shop'))
     console.log('Lighthouse worker validation passed.')
     return
@@ -108,9 +124,24 @@ async function main() {
 
   let payload
   try {
-    payload = { requestId, url: new URL(url).href, ok: true, devices: { mobile: await audit(url, 'mobile'), desktop: await audit(url, 'desktop') } }
+    const devices = {}
+    const errors = {}
+    for (const strategy of ['mobile', 'desktop']) {
+      try { devices[strategy] = await audit(url, strategy) }
+      catch (error) { errors[strategy] = String(error.message || `${strategy} Lighthouse failed.`).replace(/\s+/g, ' ').trim() }
+    }
+    const ok = Object.keys(devices).length > 0
+    payload = {
+      requestId,
+      url: new URL(url).href,
+      ok,
+      devices,
+      errors,
+      error: ok ? null : Object.entries(errors).map(([device, message]) => `${device}: ${message}`).join(' | ')
+    }
+    if (!ok) process.exitCode = 1
   } catch (error) {
-    payload = { requestId, url: new URL(url).href, ok: false, error: String(error.message || 'Lighthouse worker failed.').replace(/\s+/g, ' ').trim() }
+    payload = { requestId, url: new URL(url).href, ok: false, devices: {}, errors: {}, error: String(error.message || 'Lighthouse worker failed.').replace(/\s+/g, ' ').trim() }
     process.exitCode = 1
   }
   await postCallback(callbackUrl.href, token, payload)
