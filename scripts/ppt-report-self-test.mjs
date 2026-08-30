@@ -19,6 +19,7 @@ assert.ok(custom.records.length > 0 && custom.records.length < model.records.len
 const bytes = await createPptReportBytes(model)
 assert.equal(bytes[0], 0x50)
 assert.equal(bytes[1], 0x4b)
-assert.ok(bytes.length > 10_000)
+// A valid native-chart deck is materially larger than the former corrupt SVG-only package.
+assert.ok(bytes.length > 100_000)
 if (process.argv[2]) await writeFile(process.argv[2], bytes)
 console.log(`PPT report validation passed: ${model.records.length} records, ${model.scanDates.length} dates, ${bytes.length} bytes.`)

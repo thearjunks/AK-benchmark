@@ -20,10 +20,10 @@
     "@vitejs/plugin-react": "latest",
     "chrome-launcher": "1.2.1",
     "exceljs": "^4.4.0",
-    "jszip": "^3.10.1",
     "lighthouse": "13.4.1",
     "lucide-react": "latest",
     "nodemailer": "^9.0.5",
+    "pptxgenjs": "^4.0.1",
     "react": "latest",
     "react-dom": "latest",
     "vite": "latest"
