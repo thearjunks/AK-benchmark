@@ -1184,6 +1184,7 @@ function publicSnapshotPlugin() {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
+  const fallbackMode = String(env.LIGHTHOUSE_FALLBACK_MODE || process.env.LIGHTHOUSE_FALLBACK_MODE || (process.env.PORT ? 'managed' : 'direct')).toLowerCase()
   const emailConfig = { user: env.SMTP_USER, password: env.SMTP_APP_PASSWORD }
   const accessConfig = {
     adminEmail: env.ADMIN_EMAIL || env.SMTP_USER,
@@ -1199,7 +1200,7 @@ export default defineConfig(({ mode }) => {
     time: /^([01]\d|2[0-3]):([0-5]\d)$/.test(env.REPORT_TIME || '') ? env.REPORT_TIME : '15:00',
     autoSendAfterCheck: String(env.AUTO_SEND_AFTER_CHECK || 'true').toLowerCase() === 'true',
     authConfigured: Boolean(env.ADMIN_PASSWORD && (env.ADMIN_EMAIL || env.SMTP_USER)),
-    lighthouseFallbackMode: String(env.LIGHTHOUSE_FALLBACK_MODE || 'direct').toLowerCase() === 'managed' ? 'managed' : 'direct'
+    lighthouseFallbackMode: fallbackMode === 'managed' ? 'managed' : 'direct'
   }
   return {
     preview: {
