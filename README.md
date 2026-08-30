@@ -33,6 +33,10 @@ STC-branded React dashboard for comparing Mobile and Web Google PageSpeed scores
 - `ADMIN_USERNAME` — initial Admin username (`admin` when omitted)
 - `ADMIN_PASSWORD` — required strong password used to create the first Admin account
 - `PUBLIC_APP_URL` — public application origin used in password-setup invitation links
+- `GITHUB_ACTIONS_TOKEN` — fine-grained GitHub token with Actions write access, used only to start the Lighthouse worker
+- `LIGHTHOUSE_CALLBACK_TOKEN` — long random secret shared with the GitHub `LIGHTHOUSE_CALLBACK_TOKEN` repository secret
+- `LIGHTHOUSE_WORKER_REPOSITORY` — worker repository, defaults to `thearjunks/AK-benchmark`
+- `LIGHTHOUSE_WORKER_REF` — workflow branch, defaults to `main`
 - `ACCESS_EMAIL_NOTIFICATIONS` — access request and invitation email delivery (`true` by default)
 - `STATIC_SNAPSHOT_EXPORT` — keep `false` for a protected production application
 - `BENCHMARK_DATA_DIR` — optional persistent directory for runtime state; production defaults to `$HOME/.webpulse-benchmark`
@@ -51,6 +55,8 @@ For Hostinger Web Apps select the **Other** framework preset and use:
 - Node.js version: 20 or newer
 
 Add the PageSpeed, SMTP, and Admin variables above in the Web App environment-variable settings. The host-provided `PORT` value is used automatically. Keep `benchmark-auth.json` in the persistent runtime directory so users and access requests survive deployments.
+
+For the Zain fallback, add `LIGHTHOUSE_CALLBACK_TOKEN` as a GitHub Actions repository secret, then add the same value plus `GITHUB_ACTIONS_TOKEN` to Hostinger. The workflow runs Chrome outside Hostinger and returns a signed result; login/error-page redirects and incomplete score matrices are rejected.
 
 ## Access management workflow
 

@@ -1,0 +1,39 @@
+name: Lighthouse worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: Benchmark request ID
+        required: true
+        type: string
+      url:
+        description: Website URL to audit
+        required: true
+        type: string
+      callback_url:
+        description: Signed result callback URL
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Audit mobile and desktop
+        run: node scripts/lighthouse-worker.mjs
+        env:
+          WORKER_REQUEST_ID: ${{ inputs.request_id }}
+          WORKER_URL: ${{ inputs.url }}
+          WORKER_CALLBACK_URL: ${{ inputs.callback_url }}
+          LIGHTHOUSE_CALLBACK_TOKEN: ${{ secrets.LIGHTHOUSE_CALLBACK_TOKEN }}

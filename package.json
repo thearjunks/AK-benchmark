@@ -7,7 +7,8 @@
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "start": "node server.mjs"
+    "start": "node server.mjs",
+    "test:worker": "node scripts/lighthouse-worker.mjs --self-test"
   },
   "engines": {
     "node": ">=22.19"

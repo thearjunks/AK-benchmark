@@ -182,7 +182,7 @@ export function authPlugin(config = {}) {
   const handler = async (req, res, next) => {
     const requestPath = req.url?.split('?')[0] || ''
     if (!requestPath.startsWith('/api/')) return next()
-    if (!ready && requestPath !== '/api/health') return json(res, 503, { error: 'Access service is starting.' })
+    if (!ready && !['/api/health', '/api/lighthouse-worker/callback'].includes(requestPath)) return json(res, 503, { error: 'Access service is starting.' })
 
     try {
       if (['POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method || '') && req.headers.origin) {
@@ -316,7 +316,7 @@ export function authPlugin(config = {}) {
       }
 
       if (requestPath.startsWith('/api/admin/')) return json(res, 404, { error: 'Admin endpoint not found.' })
-      if (requestPath === '/api/health') return next()
+      if (requestPath === '/api/health' || requestPath === '/api/lighthouse-worker/callback') return next()
       const user = sessionUser(req)
       if (!user) return json(res, 401, { error: 'Sign in is required.' })
       if (!isAllowed(user, requestPath, req.method)) return json(res, 403, { error: 'You do not have permission to use this feature.' })

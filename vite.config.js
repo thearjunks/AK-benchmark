@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react'
 import nodemailer from 'nodemailer'
 import ExcelJS from 'exceljs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 import path from 'node:path'
 import { authPlugin } from './auth.mjs'
 
@@ -142,6 +143,7 @@ async function runLighthouseFallback(targetUrl, strategy) {
     import('chrome-launcher')
   ])
   let chrome
+  let lighthouseTimer
   try {
     let chromePath = process.env.CHROME_PATH || undefined
     let chromeFlags = [
@@ -171,12 +173,13 @@ async function runLighthouseFallback(targetUrl, strategy) {
     })
     const result = await Promise.race([
       lighthouseRun,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Direct Lighthouse audit timed out after 150 seconds.')), 150_000))
+      new Promise((_, reject) => { lighthouseTimer = setTimeout(() => reject(new Error('Direct Lighthouse audit timed out after 150 seconds.')), 150_000) })
     ])
     if (!result?.lhr) throw new Error('Lighthouse did not return an audit result.')
     if (result.lhr.runtimeError?.message) throw new Error(cleanText(result.lhr.runtimeError.message))
     return { lighthouseResult: result.lhr, auditSource: 'Direct Lighthouse fallback' }
   } finally {
+    if (lighthouseTimer) clearTimeout(lighthouseTimer)
     await chrome?.kill().catch(() => {})
   }
 }
@@ -309,6 +312,73 @@ function zeroScoreSite(standardUrl, index) {
     scanWarning: null,
     pending: true,
     color: null
+  }
+}
+
+function workerScore(value, label) {
+  if (!Number.isInteger(value) || value < 0 || value > 100) throw new Error(`Lighthouse worker returned an invalid ${label} score.`)
+  return value
+}
+
+function workerPayloadToAnalysis(payload, expectedUrl) {
+  if (!payload?.ok || new URL(payload.url).href !== new URL(expectedUrl).href) throw new Error('Lighthouse worker returned a mismatched URL.')
+  const expectedHost = new URL(expectedUrl).hostname.replace(/^www\./, '')
+  const devices = {}
+  let finalUrl = expectedUrl
+  let sourceFetchTime = null
+  let lighthouseVersion = null
+  let coreWebVitals = null
+
+  for (const device of ['mobile', 'desktop']) {
+    const result = payload.devices?.[device]
+    const final = new URL(result?.finalUrl || '')
+    if (final.hostname.replace(/^www\./, '') !== expectedHost || /(?:error|login|signin|auth)[=_/-]?/i.test(`${final.pathname}${final.search}`)) {
+      throw new Error(`Lighthouse worker reached an invalid ${device} final URL.`)
+    }
+    devices[device] = {
+      performance: workerScore(result.scores?.performance, `${device} Performance`),
+      accessibility: workerScore(result.scores?.accessibility, `${device} Accessibility`),
+      bestPractices: workerScore(result.scores?.bestPractices, `${device} Best Practices`),
+      seo: workerScore(result.scores?.seo, `${device} SEO`)
+    }
+    finalUrl = result.finalUrl
+    sourceFetchTime ||= result.fetchTime || null
+    lighthouseVersion ||= result.lighthouseVersion || null
+    coreWebVitals ??= Number.isInteger(result.coreWebVitals) ? result.coreWebVitals : null
+  }
+
+  const categoryAverage = key => Math.round((devices.mobile[key] + devices.desktop[key]) / 2)
+  const scores = {
+    performance: categoryAverage('performance'), seo: categoryAverage('seo'),
+    accessibility: categoryAverage('accessibility'), bestPractices: categoryAverage('bestPractices'),
+    coreWebVitals, mobile: devices.mobile.performance, desktop: devices.desktop.performance
+  }
+  const validScores = Object.values(scores).filter(value => typeof value === 'number')
+  const overall = Math.round(validScores.reduce((sum, value) => sum + value, 0) / validScores.length)
+  const domain = new URL(finalUrl).hostname.replace(/^www\./, '')
+  const issues = ['mobile', 'desktop'].flatMap(device => (payload.devices[device].issues || []).slice(0, 25).map((issue, index) => ({
+    id: `${domain}-${device}-worker-${index}`,
+    site: domain,
+    device: device === 'mobile' ? 'Mobile' : 'Web',
+    severity: ['Critical', 'High', 'Medium', 'Low'].includes(issue.severity) ? issue.severity : 'Low',
+    title: cleanText(String(issue.title || 'Lighthouse finding')),
+    category: cleanText(String(issue.category || 'Performance')),
+    detail: cleanText(String(issue.detail || 'Review this Lighthouse finding.')),
+    action: cleanText(String(issue.action || 'Apply the Lighthouse recommendation.')),
+    impact: cleanText(String(issue.impact || '+1 pt'))
+  })))
+
+  return {
+    site: {
+      id: domain, domain, url: finalUrl, overall, scores, deviceScores: devices,
+      scannedAt: new Date().toISOString(), sourceFetchTime,
+      status: overall >= 90 ? 'Excellent' : overall >= 75 ? 'Good' : overall >= 50 ? 'Needs work' : 'Poor',
+      coreWebVitalsSource: coreWebVitals === null ? null : 'GitHub Lighthouse lab data',
+      lighthouseVersion, coverage: { mobile: true, desktop: true },
+      auditSources: { mobile: 'GitHub Actions Lighthouse', desktop: 'GitHub Actions Lighthouse' },
+      scanWarning: null, color: null
+    },
+    issues: issues.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity])
   }
 }
 
@@ -882,9 +952,59 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
   }
   let initialized = false
   let initializationError = null
+  const workerRepository = String(deploymentConfig.lighthouseWorkerRepository || '')
+  const workerConfigured = /^[\w.-]+\/[\w.-]+$/.test(workerRepository) && Boolean(deploymentConfig.githubActionsToken && deploymentConfig.lighthouseCallbackToken && deploymentConfig.publicAppUrl)
+  const pendingWorkerRuns = new Map()
 
   const persistState = () => writeJson(stateFile, state)
   const persistSettings = () => writeJson(settingsFile, settings)
+
+  function verifyWorkerSignature(body, signature) {
+    const expected = `sha256=${createHmac('sha256', deploymentConfig.lighthouseCallbackToken).update(body).digest('hex')}`
+    const supplied = String(signature || '')
+    return supplied.length === expected.length && timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))
+  }
+
+  async function runGitHubLighthouse(url) {
+    if (!workerConfigured) throw new Error('GitHub Lighthouse worker is not configured.')
+    const requestId = randomUUID()
+    let resolveRun
+    let rejectRun
+    const result = new Promise((resolve, reject) => { resolveRun = resolve; rejectRun = reject })
+    const timer = setTimeout(() => {
+      pendingWorkerRuns.delete(requestId)
+      rejectRun(new Error('GitHub Lighthouse worker timed out after 12 minutes.'))
+    }, 12 * 60 * 1000)
+    pendingWorkerRuns.set(requestId, { url: new URL(url).href, resolve: resolveRun, reject: rejectRun, timer })
+
+    const callbackUrl = new URL('/api/lighthouse-worker/callback', deploymentConfig.publicAppUrl).href
+    let response
+    try {
+      response = await fetch(`https://api.github.com/repos/${workerRepository}/actions/workflows/lighthouse-worker.yml/dispatches`, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/vnd.github+json',
+          Authorization: `Bearer ${deploymentConfig.githubActionsToken}`,
+          'Content-Type': 'application/json',
+          'X-GitHub-Api-Version': '2022-11-28'
+        },
+        body: JSON.stringify({
+          ref: deploymentConfig.lighthouseWorkerRef || 'main',
+          inputs: { request_id: requestId, url: new URL(url).href, callback_url: callbackUrl }
+        })
+      })
+    } catch (error) {
+      clearTimeout(timer)
+      pendingWorkerRuns.delete(requestId)
+      throw error
+    }
+    if (!response.ok) {
+      clearTimeout(timer)
+      pendingWorkerRuns.delete(requestId)
+      throw new Error(`GitHub Lighthouse worker dispatch failed with HTTP ${response.status}.`)
+    }
+    return workerPayloadToAnalysis(await result, url)
+  }
 
   async function deliverHistoryReport(recipients, trigger, selectedHistory = state.history) {
     if (!Array.isArray(selectedHistory) || !selectedHistory.length) throw new Error('No score history is available to send.')
@@ -987,9 +1107,10 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
       try {
         for (let index = 0; index < STANDARD_URLS.length; index += 1) {
           const url = STANDARD_URLS[index]
+          const canUseWorker = workerConfigured && new URL(url).hostname.replace(/^www\./, '') === 'kw.zain.com'
           let result = null
           let lastError = null
-          for (let attempt = 1; attempt <= 2; attempt += 1) {
+          for (let attempt = 1; attempt <= (canUseWorker ? 1 : 2); attempt += 1) {
             state.progress[index] = { ...state.progress[index], status: 'scanning', attempt }
             await persistState()
             try {
@@ -998,6 +1119,11 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
               result = candidate
               break
             } catch (error) { lastError = error }
+          }
+          if (!result && canUseWorker) {
+            state.progress[index] = { ...state.progress[index], status: 'scanning', message: 'Waiting for GitHub Actions Lighthouse.' }
+            await persistState()
+            try { result = await runGitHubLighthouse(url) } catch (error) { lastError = error }
           }
           if (!result) {
             state.progress[index] = { ...state.progress[index], status: 'failed', message: cleanText(lastError?.message || 'Score check failed.') }
@@ -1050,6 +1176,37 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
   const handler = async (req, res, next) => {
     const requestPath = req.url?.split('?')[0]
     res.setHeader('Cache-Control', 'no-store')
+    if (req.method === 'POST' && requestPath === '/api/lighthouse-worker/callback') {
+      let body = ''
+      for await (const chunk of req) {
+        body += chunk
+        if (body.length > 250_000) {
+          res.statusCode = 413
+          return res.end(JSON.stringify({ error: 'Worker callback is too large.' }))
+        }
+      }
+      res.setHeader('Content-Type', 'application/json; charset=utf-8')
+      if (!workerConfigured || !verifyWorkerSignature(body, req.headers['x-benchmark-signature'])) {
+        res.statusCode = 401
+        return res.end(JSON.stringify({ error: 'Invalid worker signature.' }))
+      }
+      let payload
+      try { payload = JSON.parse(body) } catch {
+        res.statusCode = 400
+        return res.end(JSON.stringify({ error: 'Invalid worker callback JSON.' }))
+      }
+      const pending = pendingWorkerRuns.get(String(payload.requestId || ''))
+      if (!pending) {
+        res.statusCode = 202
+        return res.end(JSON.stringify({ accepted: false, reason: 'Worker request is no longer active.' }))
+      }
+      clearTimeout(pending.timer)
+      pendingWorkerRuns.delete(payload.requestId)
+      if (payload.ok === true && payload.url === pending.url) pending.resolve(payload)
+      else pending.reject(new Error(cleanText(payload.error || 'GitHub Lighthouse worker failed.')))
+      res.statusCode = 202
+      return res.end(JSON.stringify({ accepted: true }))
+    }
     if (req.method === 'GET' && requestPath === '/api/health') {
       res.setHeader('Content-Type', 'application/json; charset=utf-8')
       res.statusCode = initialized ? 200 : 503
@@ -1058,6 +1215,7 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
         pageSpeedConfigured: Boolean(apiKey), emailConfigured: Boolean(transporter),
         authConfigured: deploymentConfig.authConfigured === true,
         lighthouseFallbackMode: deploymentConfig.lighthouseFallbackMode,
+        lighthouseWorkerConfigured: workerConfigured,
         schedulerEnabled: true, persistence: initialized ? 'writable' : 'pending',
         historyCount: state.history?.length || 0,
         error: initializationError
@@ -1156,7 +1314,12 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
       initializationError = cleanText(error.message)
       state = { ...state, status: 'failed', error: initializationError }
     })
-    server.httpServer?.once('close', () => { if (timer) clearTimeout(timer); if (monthlyTimer) clearTimeout(monthlyTimer) })
+    server.httpServer?.once('close', () => {
+      if (timer) clearTimeout(timer)
+      if (monthlyTimer) clearTimeout(monthlyTimer)
+      for (const pending of pendingWorkerRuns.values()) { clearTimeout(pending.timer); pending.reject(new Error('Application stopped before Lighthouse worker completed.')) }
+      pendingWorkerRuns.clear()
+    })
   }
   return { name: 'daily-benchmark-automation', configureServer: configure, configurePreviewServer: configure }
 }
@@ -1200,7 +1363,12 @@ export default defineConfig(({ mode }) => {
     time: /^([01]\d|2[0-3]):([0-5]\d)$/.test(env.REPORT_TIME || '') ? env.REPORT_TIME : '15:00',
     autoSendAfterCheck: String(env.AUTO_SEND_AFTER_CHECK || 'true').toLowerCase() === 'true',
     authConfigured: Boolean(env.ADMIN_PASSWORD && (env.ADMIN_EMAIL || env.SMTP_USER)),
-    lighthouseFallbackMode: fallbackMode === 'managed' ? 'managed' : 'direct'
+    lighthouseFallbackMode: fallbackMode === 'managed' ? 'managed' : 'direct',
+    githubActionsToken: env.GITHUB_ACTIONS_TOKEN || process.env.GITHUB_ACTIONS_TOKEN,
+    lighthouseCallbackToken: env.LIGHTHOUSE_CALLBACK_TOKEN || process.env.LIGHTHOUSE_CALLBACK_TOKEN,
+    lighthouseWorkerRepository: env.LIGHTHOUSE_WORKER_REPOSITORY || process.env.LIGHTHOUSE_WORKER_REPOSITORY || 'thearjunks/AK-benchmark',
+    lighthouseWorkerRef: env.LIGHTHOUSE_WORKER_REF || process.env.LIGHTHOUSE_WORKER_REF || 'main',
+    publicAppUrl: env.PUBLIC_APP_URL || process.env.PUBLIC_APP_URL
   }
   return {
     preview: {
