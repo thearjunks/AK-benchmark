@@ -123,13 +123,13 @@ async function runPageSpeed(targetUrl, strategy, apiKey, categories) {
   return data
 }
 
-async function runPageSpeedWithRetry(targetUrl, strategy, apiKey, categories, attempts = 3) {
+async function runPageSpeedWithRetry(targetUrl, strategy, apiKey, categories, attempts = 3, retryRuntimeErrors = false) {
   let lastError
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try { return await runPageSpeed(targetUrl, strategy, apiKey, categories) }
     catch (error) {
       lastError = error
-      if (error.code === 'PAGESPEED_RUNTIME_ERROR' || error.status === 429 || (error.status && error.status < 500) || attempt === attempts) throw error
+      if ((!retryRuntimeErrors && error.code === 'PAGESPEED_RUNTIME_ERROR') || error.status === 429 || (error.status && error.status < 500) || attempt === attempts) throw error
       await new Promise(resolve => setTimeout(resolve, attempt * 2_000))
     }
   }
@@ -198,12 +198,14 @@ function hasAllAuditCategoryScores(result) {
   return CATEGORIES.every(category => typeof categories[category]?.score === 'number')
 }
 
-async function runAuditWithFallback(targetUrl, strategy, apiKey) {
+async function runAuditWithFallback(targetUrl, strategy, apiKey, fallbackMode = 'direct') {
+  const managedOnly = fallbackMode === 'managed'
   try {
-    const result = await runPageSpeedWithRetry(targetUrl, strategy, apiKey, CATEGORIES)
+    const result = await runPageSpeedWithRetry(targetUrl, strategy, apiKey, CATEGORIES, managedOnly ? 4 : 3, managedOnly)
     if (!hasAllAuditCategoryScores(result)) throw new Error(`${strategy} response did not contain all four Lighthouse category scores.`)
-    return { ...result, auditSource: 'Google PageSpeed Insights' }
+    return { ...result, auditSource: managedOnly ? 'Google PageSpeed managed Lighthouse' : 'Google PageSpeed Insights' }
   } catch (pageSpeedError) {
+    if (managedOnly) throw new Error(`Managed Lighthouse failed: ${cleanText(pageSpeedError.message)}`)
     try {
       const result = await runLighthouseWithRetry(targetUrl, strategy)
       if (!hasAllAuditCategoryScores(result)) throw new Error(`${strategy} Lighthouse result did not contain all four category scores.`)
@@ -214,13 +216,13 @@ async function runAuditWithFallback(targetUrl, strategy, apiKey) {
   }
 }
 
-async function analyzeWebsite(targetUrl, apiKey) {
+async function analyzeWebsite(targetUrl, apiKey, fallbackMode = 'direct') {
   const target = new URL(targetUrl)
   if (!['http:', 'https:'].includes(target.protocol)) throw new Error('Only HTTP and HTTPS website URLs are supported.')
   // PageSpeed can intermittently drop one of two simultaneous requests. Run
   // devices sequentially and retry each device so a complete matrix is favored.
   const settle = async strategy => {
-    try { return { status: 'fulfilled', value: await runAuditWithFallback(target.href, strategy, apiKey) } }
+    try { return { status: 'fulfilled', value: await runAuditWithFallback(target.href, strategy, apiKey, fallbackMode) } }
     catch (reason) { return { status: 'rejected', reason } }
   }
   const mobileResult = await settle('mobile')
@@ -310,7 +312,7 @@ function zeroScoreSite(standardUrl, index) {
   }
 }
 
-function pageSpeedPlugin(apiKey) {
+function pageSpeedPlugin(apiKey, fallbackMode) {
   const handler = async (req, res, next) => {
     if (req.method !== 'POST' || req.url?.split('?')[0] !== '/api/analyze') return next()
 
@@ -331,7 +333,7 @@ function pageSpeedPlugin(apiKey) {
         res.statusCode = 400
         return res.end(JSON.stringify({ error: 'Website URL is required.' }))
       }
-      res.end(JSON.stringify(await analyzeWebsite(parsed.url, apiKey)))
+      res.end(JSON.stringify(await analyzeWebsite(parsed.url, apiKey, fallbackMode)))
     } catch (error) {
       res.statusCode = error.status && error.status >= 400 && error.status < 600 ? error.status : 500
       res.end(JSON.stringify({ error: cleanText(error.message) || 'Website analysis failed.' }))
@@ -991,7 +993,7 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
             state.progress[index] = { ...state.progress[index], status: 'scanning', attempt }
             await persistState()
             try {
-              const candidate = await analyzeWebsite(url, apiKey)
+              const candidate = await analyzeWebsite(url, apiKey, deploymentConfig.lighthouseFallbackMode)
               if (!hasCompleteScoreMatrix(candidate.site)) throw new Error('Mobile or Web score columns are incomplete.')
               result = candidate
               break
@@ -1055,6 +1057,7 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
         status: initialized ? 'ok' : 'starting', runtime: 'node', initialized,
         pageSpeedConfigured: Boolean(apiKey), emailConfigured: Boolean(transporter),
         authConfigured: deploymentConfig.authConfigured === true,
+        lighthouseFallbackMode: deploymentConfig.lighthouseFallbackMode,
         schedulerEnabled: true, persistence: initialized ? 'writable' : 'pending',
         historyCount: state.history?.length || 0,
         error: initializationError
@@ -1195,7 +1198,8 @@ export default defineConfig(({ mode }) => {
     recipients: [...new Set(String(env.EMAIL_RECIPIENTS || '').split(',').map(value => value.trim().toLowerCase()).filter(value => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)))],
     time: /^([01]\d|2[0-3]):([0-5]\d)$/.test(env.REPORT_TIME || '') ? env.REPORT_TIME : '15:00',
     autoSendAfterCheck: String(env.AUTO_SEND_AFTER_CHECK || 'true').toLowerCase() === 'true',
-    authConfigured: Boolean(env.ADMIN_PASSWORD && (env.ADMIN_EMAIL || env.SMTP_USER))
+    authConfigured: Boolean(env.ADMIN_PASSWORD && (env.ADMIN_EMAIL || env.SMTP_USER)),
+    lighthouseFallbackMode: String(env.LIGHTHOUSE_FALLBACK_MODE || 'direct').toLowerCase() === 'managed' ? 'managed' : 'direct'
   }
   return {
     preview: {
@@ -1204,7 +1208,7 @@ export default defineConfig(({ mode }) => {
     plugins: [
       authPlugin(accessConfig),
       react(),
-      pageSpeedPlugin(env.GOOGLE_PAGESPEED_API_KEY),
+      pageSpeedPlugin(env.GOOGLE_PAGESPEED_API_KEY, deploymentConfig.lighthouseFallbackMode),
       emailReportPlugin(emailConfig),
       automationPlugin(env.GOOGLE_PAGESPEED_API_KEY, emailConfig, deploymentConfig),
       ...(String(env.STATIC_SNAPSHOT_EXPORT || '').toLowerCase() === 'true' ? [publicSnapshotPlugin()] : [])
