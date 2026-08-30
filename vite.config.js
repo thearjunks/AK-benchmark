@@ -115,7 +115,11 @@ async function runPageSpeed(targetUrl, strategy, apiKey, categories) {
     throw error
   }
 
-  if (data.lighthouseResult?.runtimeError?.message) throw new Error(cleanText(data.lighthouseResult.runtimeError.message))
+  if (data.lighthouseResult?.runtimeError?.message) {
+    const error = new Error(cleanText(data.lighthouseResult.runtimeError.message))
+    error.code = 'PAGESPEED_RUNTIME_ERROR'
+    throw error
+  }
   return data
 }
 
@@ -125,7 +129,7 @@ async function runPageSpeedWithRetry(targetUrl, strategy, apiKey, categories, at
     try { return await runPageSpeed(targetUrl, strategy, apiKey, categories) }
     catch (error) {
       lastError = error
-      if (error.status === 429 || attempt === attempts) throw error
+      if (error.code === 'PAGESPEED_RUNTIME_ERROR' || error.status === 429 || (error.status && error.status < 500) || attempt === attempts) throw error
       await new Promise(resolve => setTimeout(resolve, attempt * 2_000))
     }
   }
@@ -154,7 +158,7 @@ async function runLighthouseFallback(targetUrl, strategy) {
       chromeFlags
     })
     const mobile = strategy === 'mobile'
-    const result = await lighthouse(targetUrl, {
+    const lighthouseRun = lighthouse(targetUrl, {
       port: chrome.port,
       output: 'json',
       logLevel: 'silent',
@@ -165,6 +169,10 @@ async function runLighthouseFallback(targetUrl, strategy) {
         ? { mobile: true, width: 412, height: 823, deviceScaleFactor: 1.75, disabled: false }
         : { mobile: false, width: 1440, height: 900, deviceScaleFactor: 1, disabled: false }
     })
+    const result = await Promise.race([
+      lighthouseRun,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Direct Lighthouse audit timed out after 150 seconds.')), 150_000))
+    ])
     if (!result?.lhr) throw new Error('Lighthouse did not return an audit result.')
     if (result.lhr.runtimeError?.message) throw new Error(cleanText(result.lhr.runtimeError.message))
     return { lighthouseResult: result.lhr, auditSource: 'Direct Lighthouse fallback' }
