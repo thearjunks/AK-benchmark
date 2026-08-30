@@ -10,11 +10,14 @@
     "start": "node server.mjs"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19"
   },
   "dependencies": {
+    "@sparticuz/chromium": "149.0.0",
     "@vitejs/plugin-react": "latest",
+    "chrome-launcher": "1.2.1",
     "exceljs": "^4.4.0",
+    "lighthouse": "13.4.1",
     "lucide-react": "latest",
     "nodemailer": "^9.0.5",
     "react": "latest",

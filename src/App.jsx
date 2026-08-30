@@ -38,6 +38,25 @@ function colorForDomain(domain) {
   return palette[[...domain].reduce((sum, char) => sum + char.charCodeAt(0), 0) % palette.length]
 }
 
+function zeroSiteForUrl(standardUrl, index) {
+  const domain = new URL(standardUrl).hostname.replace(/^www\./, '')
+  const zeroDevice = () => ({ performance: 0, accessibility: 0, bestPractices: 0, seo: 0 })
+  return {
+    id: `pending-${index}-${domain}`,
+    domain,
+    url: standardUrl,
+    standardUrl,
+    overall: 0,
+    scores: { performance: 0, accessibility: 0, bestPractices: 0, seo: 0, mobile: 0, desktop: 0, coreWebVitals: 0 },
+    deviceScores: { mobile: zeroDevice(), desktop: zeroDevice() },
+    scannedAt: null,
+    status: 'Pending',
+    coverage: { mobile: false, desktop: false },
+    pending: true,
+    color: colorForDomain(domain)
+  }
+}
+
 function scoreTone(score) {
   if (score >= 90) return 'great'
   if (score >= 75) return 'good'
@@ -315,7 +334,11 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
         const next = await response.json()
         if (!active) return
         setAutomation(next)
-        if (next.lastCompletedAt && next.lastCompletedAt !== appliedAutomationRef.current && Array.isArray(next.sites) && next.sites.length) {
+        if (next.status === 'running' && Array.isArray(next.sites) && next.sites.length) {
+          const progressiveSites = next.sites.map(site => ({ ...site, color: colorForDomain(site.domain), delta: 0 }))
+          setSites(progressiveSites)
+          setIssues(Array.isArray(next.issues) ? next.issues : [])
+        } else if (next.lastCompletedAt && next.lastCompletedAt !== appliedAutomationRef.current && Array.isArray(next.sites) && next.sites.length) {
           appliedAutomationRef.current = next.lastCompletedAt
           const liveSites = next.sites.map(site => ({ ...site, color: colorForDomain(site.domain), delta: 0 }))
           setSites(liveSites)
@@ -499,7 +522,25 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
       const response = await fetch('/api/automation/run', { method: 'POST' })
       const result = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(result.error || 'Unable to start the score check')
-      setAutomation(current => ({ ...current, status: 'running', trigger: 'manual', progress: [] }))
+      const resetSites = (automation.standardUrls || []).map(zeroSiteForUrl)
+      setSites(resetSites)
+      setIssues([])
+      setAutomation(current => ({
+        ...current,
+        status: 'running',
+        trigger: 'manual',
+        sites: resetSites,
+        issues: [],
+        progress: resetSites.map(site => ({
+          url: site.standardUrl,
+          domain: site.domain,
+          status: 'queued',
+          attempt: 0,
+          overall: 0,
+          checkedAt: null,
+          latestSite: site
+        }))
+      }))
       notify('Score check started for all six standard URLs')
     } catch (error) { notify(error.message || 'Unable to start the score check') }
   }
@@ -657,12 +698,12 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
       <div className={`view-screen ${view === 'overview' ? 'active' : ''}`}>
       <section className="standard-monitor">
         <div className="standard-monitor-head">
-          <div><span>Automated standard monitoring</span><h1>Six websites. One complete score check.</h1><p>All Mobile and Web values are validated before the dashboard is updated or the email is sent.</p></div>
+          <div><span>Automated standard monitoring</span><h1>Six websites. One complete score check.</h1><p>Each run resets scores to zero, then fills verified PageSpeed values with direct Lighthouse fallback.</p></div>
           <div className="automation-actions"><span className="next-run">Next automatic run<strong>{checkedTime(automation.nextRunAt)}</strong></span>{permissions.canSendEmail && <label className={`auto-send-toggle ${autoSendAfterCheck ? 'enabled' : ''}`} title={autoSendAfterCheck ? 'The completed report will be emailed to all saved recipients' : 'The completed report will wait for manual review'}><input type="checkbox" checked={autoSendAfterCheck} onChange={toggleAutoSendAfterCheck} disabled={automation.status === 'running'}/><span aria-hidden="true"><i></i></span><b>Auto-Send Email<small>{autoSendAfterCheck ? 'Enabled' : 'Disabled'}</small></b></label>}<button onClick={runStandardCheck} disabled={automation.status === 'running'}>{automation.status === 'running' ? <RefreshCw className="spin" size={17}/> : <Gauge size={17}/>} {automation.status === 'running' ? `Checking ${automation.progress?.filter(item => item.status === 'complete').length || 0}/6` : 'Check Score Now'}</button></div>
         </div>
         <div className={`automation-status ${automation.status || 'idle'}`}>
           {automation.status === 'running' ? <RefreshCw className="spin" size={15}/> : automation.status === 'failed' ? <AlertTriangle size={15}/> : <Check size={15}/>}
-          <span>{automation.status === 'running' ? `Fetching all eight score values for every website. ${autoSendAfterCheck ? 'The report will be emailed after all six are complete.' : 'The completed report will be held for manual review.'}` : automation.status === 'failed' ? `${automation.error || 'The latest complete check failed.'} Dashboard data was preserved and email was not sent.` : automation.lastCompletedAt ? `Last complete run: ${checkedTime(automation.lastCompletedAt)} · Email ${automation.emailStatus?.status || 'not sent'}${automation.emailStatus?.message ? ` — ${automation.emailStatus.message}` : ''}` : 'Ready for the first complete six-site score check.'}</span>
+          <span>{automation.status === 'running' ? `Scores started at zero and are updating as each website completes. ${autoSendAfterCheck ? 'The report will be emailed after all six are complete.' : 'The completed report will be held for manual review.'}` : automation.status === 'failed' ? `${automation.error || 'The latest complete check failed.'} Completed websites remain updated, unfinished websites stay at zero, and email was not sent.` : automation.lastCompletedAt ? `Last complete run: ${checkedTime(automation.lastCompletedAt)} · Email ${automation.emailStatus?.status || 'not sent'}${automation.emailStatus?.message ? ` — ${automation.emailStatus.message}` : ''}` : 'Ready for the first complete six-site score check.'}</span>
         </div>
         <div className="standard-url-grid">
           {(automation.standardUrls || []).map((standardUrl, index) => {

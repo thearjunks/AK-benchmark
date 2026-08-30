@@ -254,7 +254,7 @@ export function authPlugin(config = {}) {
         if (!requireAdmin(req, res)) return
         return json(res, 200, { requests: store.requests, users: store.users.map(publicUser) })
       }
-      const decisionMatch = requestPath.match(/^\/api\/admin\/access-requests\/([^/]+)$/)
+      const decisionMatch = requestPath.match(/^\/api\/admin\/access-requests\/([^/]+)\/decision$/)
       if (decisionMatch && req.method === 'POST') {
         const admin = requireAdmin(req, res); if (!admin) return
         const input = await bodyJson(req)

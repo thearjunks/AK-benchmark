@@ -132,13 +132,87 @@ async function runPageSpeedWithRetry(targetUrl, strategy, apiKey, categories, at
   throw lastError
 }
 
+async function runLighthouseFallback(targetUrl, strategy) {
+  const [{ default: lighthouse }, { launch }] = await Promise.all([
+    import('lighthouse'),
+    import('chrome-launcher')
+  ])
+  let chrome
+  try {
+    let chromePath = process.env.CHROME_PATH || undefined
+    let chromeFlags = [
+      '--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
+      '--ignore-certificate-errors', '--disable-extensions', '--window-size=1440,900'
+    ]
+    if (!chromePath && process.platform === 'linux') {
+      const { default: chromium } = await import('@sparticuz/chromium')
+      chromePath = await chromium.executablePath()
+      chromeFlags = [...chromium.args, '--ignore-certificate-errors', '--window-size=1440,900']
+    }
+    chrome = await launch({
+      chromePath,
+      chromeFlags
+    })
+    const mobile = strategy === 'mobile'
+    const result = await lighthouse(targetUrl, {
+      port: chrome.port,
+      output: 'json',
+      logLevel: 'silent',
+      onlyCategories: CATEGORIES,
+      formFactor: mobile ? 'mobile' : 'desktop',
+      throttlingMethod: 'simulate',
+      screenEmulation: mobile
+        ? { mobile: true, width: 412, height: 823, deviceScaleFactor: 1.75, disabled: false }
+        : { mobile: false, width: 1440, height: 900, deviceScaleFactor: 1, disabled: false }
+    })
+    if (!result?.lhr) throw new Error('Lighthouse did not return an audit result.')
+    if (result.lhr.runtimeError?.message) throw new Error(cleanText(result.lhr.runtimeError.message))
+    return { lighthouseResult: result.lhr, auditSource: 'Direct Lighthouse fallback' }
+  } finally {
+    await chrome?.kill().catch(() => {})
+  }
+}
+
+async function runLighthouseWithRetry(targetUrl, strategy, attempts = 2) {
+  let lastError
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try { return await runLighthouseFallback(targetUrl, strategy) }
+    catch (error) {
+      lastError = error
+      if (attempt < attempts) await new Promise(resolve => setTimeout(resolve, attempt * 2_000))
+    }
+  }
+  throw lastError
+}
+
+function hasAllAuditCategoryScores(result) {
+  const categories = result?.lighthouseResult?.categories || {}
+  return CATEGORIES.every(category => typeof categories[category]?.score === 'number')
+}
+
+async function runAuditWithFallback(targetUrl, strategy, apiKey) {
+  try {
+    const result = await runPageSpeedWithRetry(targetUrl, strategy, apiKey, CATEGORIES)
+    if (!hasAllAuditCategoryScores(result)) throw new Error(`${strategy} response did not contain all four Lighthouse category scores.`)
+    return { ...result, auditSource: 'Google PageSpeed Insights' }
+  } catch (pageSpeedError) {
+    try {
+      const result = await runLighthouseWithRetry(targetUrl, strategy)
+      if (!hasAllAuditCategoryScores(result)) throw new Error(`${strategy} Lighthouse result did not contain all four category scores.`)
+      return result
+    } catch (lighthouseError) {
+      throw new Error(`PageSpeed failed: ${cleanText(pageSpeedError.message)} Lighthouse fallback failed: ${cleanText(lighthouseError.message)}`)
+    }
+  }
+}
+
 async function analyzeWebsite(targetUrl, apiKey) {
   const target = new URL(targetUrl)
   if (!['http:', 'https:'].includes(target.protocol)) throw new Error('Only HTTP and HTTPS website URLs are supported.')
   // PageSpeed can intermittently drop one of two simultaneous requests. Run
   // devices sequentially and retry each device so a complete matrix is favored.
   const settle = async strategy => {
-    try { return { status: 'fulfilled', value: await runPageSpeedWithRetry(target.href, strategy, apiKey, CATEGORIES) } }
+    try { return { status: 'fulfilled', value: await runAuditWithFallback(target.href, strategy, apiKey) } }
     catch (reason) { return { status: 'rejected', reason } }
   }
   const mobileResult = await settle('mobile')
@@ -187,6 +261,10 @@ async function analyzeWebsite(targetUrl, apiKey) {
       coreWebVitalsSource: coreWebVitals.source,
       lighthouseVersion: primaryResult.lighthouseResult?.lighthouseVersion || null,
       coverage: { mobile: Boolean(mobile), desktop: Boolean(desktop) },
+      auditSources: {
+        mobile: mobile?.auditSource || null,
+        desktop: desktop?.auditSource || null
+      },
       scanWarning: !mobile ? `Mobile scan failed: ${mobileResult.reason?.message || 'unknown error'}` : !desktop ? `Web scan failed: ${desktopResult.reason?.message || 'unknown error'}` : null,
       color: null
     },
@@ -200,6 +278,28 @@ async function analyzeWebsite(targetUrl, apiKey) {
 function hasCompleteScoreMatrix(site) {
   return site?.coverage?.mobile && site?.coverage?.desktop && ['mobile', 'desktop'].every(device =>
     DEVICE_METRICS.every(metric => typeof site.deviceScores?.[device]?.[metric] === 'number'))
+}
+
+function zeroScoreSite(standardUrl, index) {
+  const domain = new URL(standardUrl).hostname.replace(/^www\./, '')
+  const zeroDevice = () => ({ performance: 0, accessibility: 0, bestPractices: 0, seo: 0 })
+  return {
+    id: `pending-${index}-${domain}`,
+    domain,
+    url: standardUrl,
+    standardUrl,
+    overall: 0,
+    scores: { performance: 0, seo: 0, accessibility: 0, bestPractices: 0, coreWebVitals: 0, mobile: 0, desktop: 0 },
+    deviceScores: { mobile: zeroDevice(), desktop: zeroDevice() },
+    scannedAt: null,
+    sourceFetchTime: null,
+    status: 'Pending',
+    coverage: { mobile: false, desktop: false },
+    auditSources: { mobile: null, desktop: null },
+    scanWarning: null,
+    pending: true,
+    color: null
+  }
 }
 
 function pageSpeedPlugin(apiKey) {
@@ -859,17 +959,19 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
       const stagedSites = []
       const stagedIssues = []
       const failures = []
-      const previousProgress = new Map((state.progress || []).map(item => [item.url, item]))
+      const resetSites = STANDARD_URLS.map(zeroScoreSite)
       state = {
         ...state, status: 'running', trigger, lastAttemptAt: new Date().toISOString(),
-        error: null, emailStatus: null,
-        progress: STANDARD_URLS.map(url => {
-          const previous = previousProgress.get(url) || {}
-          return {
-            url, domain: new URL(url).hostname.replace(/^www\./, ''), status: 'queued', attempt: 0,
-            overall: previous.overall, checkedAt: previous.checkedAt, latestSite: previous.latestSite
-          }
-        })
+        error: null, emailStatus: null, sites: resetSites, issues: [],
+        progress: STANDARD_URLS.map((url, index) => ({
+          url,
+          domain: resetSites[index].domain,
+          status: 'queued',
+          attempt: 0,
+          overall: 0,
+          checkedAt: null,
+          latestSite: resetSites[index]
+        }))
       }
       await persistState()
       try {
@@ -898,6 +1000,8 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
           stagedSites.push(result.site)
           stagedIssues.push(...result.issues)
           state.history = mergeHistory(state.history, historyRecordsForSite(result.site))
+          state.sites[index] = result.site
+          state.issues = [...stagedIssues]
           state.progress[index] = { ...state.progress[index], domain: result.site.domain, status: 'complete', overall: result.site.overall, checkedAt: result.site.scannedAt, latestSite: result.site }
           await persistState()
         }
