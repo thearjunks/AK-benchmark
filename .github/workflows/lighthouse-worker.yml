@@ -31,7 +31,7 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Audit mobile and desktop
-        run: node scripts/lighthouse-worker.mjs
+        run: xvfb-run -a node scripts/lighthouse-worker.mjs
         env:
           WORKER_REQUEST_ID: ${{ inputs.request_id }}
           WORKER_URL: ${{ inputs.url }}

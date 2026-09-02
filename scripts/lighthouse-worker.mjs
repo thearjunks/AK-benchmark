@@ -52,7 +52,7 @@ function issuesFrom(lhr) {
 }
 
 async function auditOnce(url, strategy) {
-  const chrome = await launch({ chromeFlags: ['--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--ignore-certificate-errors', '--window-size=1440,900'] })
+  const chrome = await launch({ chromeFlags: ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--ignore-certificate-errors', '--window-size=1440,900'] })
   let auditTimer
   try {
     const mobile = strategy === 'mobile'
