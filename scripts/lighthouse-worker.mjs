@@ -81,7 +81,7 @@ async function auditOnce(url, strategy) {
     }
   } finally {
     if (auditTimer) clearTimeout(auditTimer)
-    await chrome.kill().catch(() => {})
+    try { await chrome.kill() } catch { /* Chrome already exited. */ }
   }
 }
 
