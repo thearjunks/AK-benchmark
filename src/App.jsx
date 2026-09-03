@@ -1450,7 +1450,8 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
           setEmailRecipients(settings.recipients);
         else if (emailRecipients.length) persistEmailSettings(emailRecipients);
         if (settings.schedule) setEmailSchedule(settings.schedule);
-        if (settings.time) setEmailTime(settings.time);
+        setEmailTime("10:00");
+        localStorage.setItem("benchmark-email-time", "10:00");
         if (settings.day) setEmailDay(settings.day);
         if (
           settings.reportType === "benchmark" ||
@@ -3305,14 +3306,7 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
                     <span>Send time</span>
                     <div>
                       <Clock3 size={16} />
-                      <input
-                        type="time"
-                        value={emailTime}
-                        onChange={(event) => {
-                          setEmailTime(event.target.value);
-                          setEmailSchedule("Daily summary");
-                        }}
-                      />
+                      <strong>10:00 AM</strong>
                     </div>
                   </label>
                   <small className="timezone-note">

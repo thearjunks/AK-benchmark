@@ -744,7 +744,7 @@ function emailReportPlugin(config) {
   }
 }
 
-const REPORTING_SCHEDULE_VERSION = 2
+const REPORTING_SCHEDULE_VERSION = 3
 
 function nextKuwaitRun(time = '10:00', now = Date.now()) {
   const [hour, minute] = /^([01]\d|2[0-3]):([0-5]\d)$/.test(time) ? time.split(':').map(Number) : [10, 0]
@@ -1201,13 +1201,13 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
     const persistedSettings = await readJson(settingsFile, {})
     settings = { ...settings, ...persistedSettings }
     if (settings.reportingScheduleVersion !== REPORTING_SCHEDULE_VERSION) {
-      settings.time = '10:00'
       settings.day = 'Sunday'
       settings.weeklyHistoryEnabled = true
       settings.historyWorkingDays = 15
       settings.monthlyHistoryEnabled = false
       settings.reportingScheduleVersion = REPORTING_SCHEDULE_VERSION
     }
+    settings.time = '10:00'
     if (!settings.recipients.length && deploymentConfig.recipients?.length) settings.recipients = deploymentConfig.recipients
     settings.autoSendAfterCheck = settings.autoSendAfterCheck === true
     settings.weeklyHistoryEnabled = settings.weeklyHistoryEnabled !== false
@@ -1547,6 +1547,8 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
           ...settings,
           ...next,
           schedule: 'Daily summary',
+          time: '10:00',
+          day: 'Sunday',
           recipients,
           autoSendAfterCheck: next.autoSendAfterCheck === undefined ? settings.autoSendAfterCheck : next.autoSendAfterCheck === true,
           reportType: next.reportType === undefined ? settings.reportType : next.reportType === 'history' ? 'history' : 'benchmark',
