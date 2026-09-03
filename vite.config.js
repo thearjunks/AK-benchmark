@@ -659,6 +659,38 @@ async function sendHistoryEmail(transporter, config, recipients, history) {
   })
 }
 
+export function buildSundayBenchmarkEmail(sites, history, now = Date.now()) {
+  const selectedHistory = filterPreviousKuwaitWorkingDays(history, now, 15)
+  const matrix = buildMatrixEmail(sites)
+  const historyReport = buildHistoryEmail(selectedHistory)
+  const workingDates = previousKuwaitWorkingDateKeys(now, 15)
+  const periodLabel = `${workingDates[0]} to ${workingDates.at(-1)}`
+  const historyHtml = selectedHistory.length
+    ? historyReport.html
+    : `<div style="font-family:Arial,sans-serif;max-width:900px;margin:16px auto;padding:18px;border:1px solid #dedfe1;border-radius:12px"><h2 style="margin:0 0 6px">Previous 15 working days</h2><p style="margin:0;color:#7d858a">No saved history was available for ${escapeHtml(periodLabel)}.</p></div>`
+  return {
+    subject: `Sunday Website Benchmark Report + 15 Working Day History — ${new Date(now).toLocaleDateString('en-GB', { timeZone: 'Asia/Kuwait' })}`,
+    text: `${matrix.text}\n\nPrevious 15 Kuwait working days (${periodLabel})\n\n${selectedHistory.length ? historyReport.text : 'No saved history was available for this period.'}`,
+    html: `${matrix.html}${historyHtml}`,
+    selectedHistory,
+    workingDates,
+    periodLabel
+  }
+}
+
+async function sendSundayBenchmarkEmail(transporter, config, recipients, sites, history, now = Date.now()) {
+  const report = buildSundayBenchmarkEmail(sites, history, now)
+  const attachments = report.selectedHistory.length ? [{
+    filename: `website-benchmark-history-15-working-days-${new Date(now).toISOString().slice(0, 10)}.xlsx`,
+    content: Buffer.from(await buildHistoryWorkbook(report.selectedHistory)),
+    contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  }] : []
+  return transporter.sendMail({
+    from: `STC Website Benchmark <${config.user}>`, to: recipients,
+    subject: report.subject, text: report.text, html: report.html, attachments
+  })
+}
+
 function emailReportPlugin(config) {
   const configured = Boolean(config.user && config.password)
   const transporter = createGmailTransporter(config)
@@ -712,43 +744,48 @@ function emailReportPlugin(config) {
   }
 }
 
-function nextKuwaitRun(time = '15:00', now = Date.now()) {
-  const [hour, minute] = /^([01]\d|2[0-3]):([0-5]\d)$/.test(time) ? time.split(':').map(Number) : [15, 0]
+const REPORTING_SCHEDULE_VERSION = 2
+
+function nextKuwaitRun(time = '10:00', now = Date.now()) {
+  const [hour, minute] = /^([01]\d|2[0-3]):([0-5]\d)$/.test(time) ? time.split(':').map(Number) : [10, 0]
   const kuwaitNow = new Date(now + 3 * 60 * 60 * 1000)
   let next = Date.UTC(kuwaitNow.getUTCFullYear(), kuwaitNow.getUTCMonth(), kuwaitNow.getUTCDate(), hour - 3, minute, 0)
   if (next <= now) next += 24 * 60 * 60 * 1000
   return new Date(next).toISOString()
 }
 
-export function firstWorkingDayOfMonth(year, monthIndex) {
-  const weekday = new Date(Date.UTC(year, monthIndex, 1)).getUTCDay()
-  return weekday === 5 ? 3 : weekday === 6 ? 2 : 1
+export function isKuwaitSunday(now = Date.now()) {
+  const value = typeof now === 'number' ? now : new Date(now).getTime()
+  return new Date(value + 3 * 60 * 60 * 1000).getUTCDay() === 0
 }
 
-export function nextMonthlyHistoryRun(time = '15:00', now = Date.now()) {
-  const [hour, minute] = /^([01]\d|2[0-3]):([0-5]\d)$/.test(time) ? time.split(':').map(Number) : [15, 0]
-  const kuwaitNow = new Date(now + 3 * 60 * 60 * 1000)
-  let year = kuwaitNow.getUTCFullYear()
-  let month = kuwaitNow.getUTCMonth()
-  let day = firstWorkingDayOfMonth(year, month)
-  let next = Date.UTC(year, month, day, hour - 3, minute, 0)
-  if (next <= now) {
-    month += 1
-    if (month > 11) { month = 0; year += 1 }
-    day = firstWorkingDayOfMonth(year, month)
-    next = Date.UTC(year, month, day, hour - 3, minute, 0)
+export function previousKuwaitWorkingDateKeys(now = Date.now(), count = 15) {
+  const value = typeof now === 'number' ? now : new Date(now).getTime()
+  const kuwaitNow = new Date(value + 3 * 60 * 60 * 1000)
+  let cursor = Date.UTC(kuwaitNow.getUTCFullYear(), kuwaitNow.getUTCMonth(), kuwaitNow.getUTCDate())
+  const dates = []
+  while (dates.length < count) {
+    cursor -= 24 * 60 * 60 * 1000
+    const date = new Date(cursor)
+    const weekday = date.getUTCDay()
+    if (weekday >= 0 && weekday <= 4) dates.push(date.toISOString().slice(0, 10))
   }
-  return new Date(next).toISOString()
+  return dates.reverse()
 }
 
-function dueMonthlyHistoryPeriod(time = '15:00', now = Date.now()) {
-  const [hour, minute] = /^([01]\d|2[0-3]):([0-5]\d)$/.test(time) ? time.split(':').map(Number) : [15, 0]
-  const kuwaitNow = new Date(now + 3 * 60 * 60 * 1000)
-  const year = kuwaitNow.getUTCFullYear()
-  const month = kuwaitNow.getUTCMonth()
-  if (kuwaitNow.getUTCDate() !== firstWorkingDayOfMonth(year, month)) return null
-  const scheduled = Date.UTC(year, month, kuwaitNow.getUTCDate(), hour - 3, minute, 0)
-  return now >= scheduled ? `${year}-${String(month + 1).padStart(2, '0')}` : null
+export function filterPreviousKuwaitWorkingDays(history, now = Date.now(), count = 15) {
+  const included = new Set(previousKuwaitWorkingDateKeys(now, count))
+  return history.filter(record => included.has(historyDateKey(record.checkedAt)))
+}
+
+export function nextSundayHistoryRun(time = '10:00', now = Date.now()) {
+  const [hour, minute] = /^([01]\d|2[0-3]):([0-5]\d)$/.test(time) ? time.split(':').map(Number) : [10, 0]
+  const value = typeof now === 'number' ? now : new Date(now).getTime()
+  const kuwaitNow = new Date(value + 3 * 60 * 60 * 1000)
+  const daysUntilSunday = (7 - kuwaitNow.getUTCDay()) % 7
+  let next = Date.UTC(kuwaitNow.getUTCFullYear(), kuwaitNow.getUTCMonth(), kuwaitNow.getUTCDate() + daysUntilSunday, hour - 3, minute, 0)
+  if (next <= value) next += 7 * 24 * 60 * 60 * 1000
+  return new Date(next).toISOString()
 }
 
 async function readJson(file, fallback) {
@@ -1074,17 +1111,17 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
   const historyBackupFile = path.join(runtimeDir, 'website-benchmark-score-history.xlsx')
   const transporter = createGmailTransporter(emailConfig)
   let timer = null
-  let monthlyTimer = null
   let running = null
   let individualRunning = null
   let state = {
     status: 'idle', standardUrls: STANDARD_URLS, sites: [], issues: [], progress: [], history: [],
-    lastAttemptAt: null, lastCompletedAt: null, nextRunAt: nextKuwaitRun(),
+    lastAttemptAt: null, lastCompletedAt: null, nextRunAt: nextKuwaitRun('10:00'),
     error: null, emailStatus: null, historyEmailStatus: null, nextHistoryEmailAt: null
   }
   let settings = {
-    recipients: deploymentConfig.recipients || [], schedule: 'Daily summary', time: deploymentConfig.time || '15:00', day: 'Sunday', enabled: true,
-    autoSendAfterCheck: deploymentConfig.autoSendAfterCheck === true, reportType: 'benchmark', monthlyHistoryEnabled: true, lastMonthlyHistoryPeriod: null
+    recipients: deploymentConfig.recipients || [], schedule: 'Daily summary', time: deploymentConfig.time || '10:00', day: 'Sunday', enabled: true,
+    autoSendAfterCheck: deploymentConfig.autoSendAfterCheck === true, reportType: 'benchmark', weeklyHistoryEnabled: true,
+    historyWorkingDays: 15, reportingScheduleVersion: REPORTING_SCHEDULE_VERSION, monthlyHistoryEnabled: false
   }
   let initialized = false
   let initializationError = null
@@ -1156,29 +1193,25 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
     await persistState()
   }
 
-  async function runScheduledHistoryReport() {
-    const period = dueMonthlyHistoryPeriod(settings.time)
-    if (!period || period === settings.lastMonthlyHistoryPeriod || !settings.monthlyHistoryEnabled) return
-    const recipients = Array.isArray(settings.recipients) ? settings.recipients.filter(Boolean) : []
-    try {
-      await deliverHistoryReport(recipients, 'monthly')
-      settings.lastMonthlyHistoryPeriod = period
-      await persistSettings()
-    } catch (error) {
-      state.historyEmailStatus = { status: 'failed', trigger: 'monthly', message: cleanText(error.message || 'Monthly history email failed.') }
-      await persistState()
-    }
-  }
-
   async function initialize() {
     const bundledState = await readJson(bundledStateFile, state)
     state = await readJson(stateFile, bundledState)
     const legacyHistory = await readLegacyHistory()
     const resumeInterruptedRun = state.status === 'running'
-    settings = { ...settings, ...await readJson(settingsFile, {}) }
+    const persistedSettings = await readJson(settingsFile, {})
+    settings = { ...settings, ...persistedSettings }
+    if (settings.reportingScheduleVersion !== REPORTING_SCHEDULE_VERSION) {
+      settings.time = '10:00'
+      settings.day = 'Sunday'
+      settings.weeklyHistoryEnabled = true
+      settings.historyWorkingDays = 15
+      settings.monthlyHistoryEnabled = false
+      settings.reportingScheduleVersion = REPORTING_SCHEDULE_VERSION
+    }
     if (!settings.recipients.length && deploymentConfig.recipients?.length) settings.recipients = deploymentConfig.recipients
     settings.autoSendAfterCheck = settings.autoSendAfterCheck === true
-    settings.monthlyHistoryEnabled = settings.monthlyHistoryEnabled !== false
+    settings.weeklyHistoryEnabled = settings.weeklyHistoryEnabled !== false
+    settings.monthlyHistoryEnabled = false
     settings.reportType = settings.reportType === 'history' ? 'history' : 'benchmark'
     state.standardUrls = STANDARD_URLS
     // Do not keep showing failures produced by the retired Temp-profile
@@ -1199,15 +1232,13 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
     const seedSites = [...(Array.isArray(state.sites) ? state.sites : []), ...(state.progress || []).map(item => item.latestSite).filter(Boolean)]
     state.history = mergeHistory(state.history, seedSites.flatMap(historyRecordsForSite))
     state.nextRunAt = nextKuwaitRun(settings.time)
+    state.nextHistoryEmailAt = nextSundayHistoryRun(settings.time)
     await persistState()
+    await persistSettings()
     await persistHistoryBackup()
     initialized = true
     initializationError = null
     scheduleNextRun()
-    scheduleMonthlyHistoryRun()
-    if (dueMonthlyHistoryPeriod(settings.time) && settings.lastMonthlyHistoryPeriod !== dueMonthlyHistoryPeriod(settings.time)) {
-      runScheduledHistoryReport().finally(scheduleMonthlyHistoryRun)
-    }
     if (resumeInterruptedRun) runAutomation('recovery').catch(() => {})
   }
 
@@ -1215,28 +1246,11 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
     if (timer) clearTimeout(timer)
     const nextRunAt = nextKuwaitRun(settings.time)
     state.nextRunAt = nextRunAt
+    state.nextHistoryEmailAt = nextSundayHistoryRun(settings.time)
     persistState().catch(() => {})
     timer = setTimeout(() => {
       runAutomation('scheduled').finally(scheduleNextRun)
     }, Math.max(1_000, new Date(nextRunAt).getTime() - Date.now()))
-  }
-
-  function scheduleMonthlyHistoryRun() {
-    if (monthlyTimer) clearTimeout(monthlyTimer)
-    if (!settings.monthlyHistoryEnabled) {
-      state.nextHistoryEmailAt = null
-      persistState().catch(() => {})
-      return
-    }
-    const nextRunAt = nextMonthlyHistoryRun(settings.time)
-    const target = new Date(nextRunAt).getTime()
-    state.nextHistoryEmailAt = nextRunAt
-    persistState().catch(() => {})
-    const remaining = Math.max(1_000, target - Date.now())
-    monthlyTimer = setTimeout(() => {
-      if (Date.now() + 1_000 < target) return scheduleMonthlyHistoryRun()
-      runScheduledHistoryReport().finally(scheduleMonthlyHistoryRun)
-    }, Math.min(remaining, 2_147_000_000))
   }
 
   async function runAutomation(trigger) {
@@ -1324,7 +1338,16 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
         } else if (recipients.length && transporter) {
           try {
             await transporter.verify()
-            await sendMatrixEmail(transporter, emailConfig, recipients, stagedSites)
+            if (trigger === 'scheduled' && settings.weeklyHistoryEnabled && isKuwaitSunday(completedAt)) {
+              const sundayHistory = filterPreviousKuwaitWorkingDays(state.history || [], completedAt, settings.historyWorkingDays || 15)
+              await sendSundayBenchmarkEmail(transporter, emailConfig, recipients, stagedSites, state.history || [], completedAt)
+              state.historyEmailStatus = {
+                status: 'sent', trigger: 'weekly-sunday', sentAt: new Date().toISOString(),
+                recipients: recipients.length, records: sundayHistory.length, workingDays: 15
+              }
+            } else {
+              await sendMatrixEmail(transporter, emailConfig, recipients, stagedSites)
+            }
             state.emailStatus = { status: 'sent', sentAt: new Date().toISOString(), recipients: recipients.length }
           } catch (error) {
             state.emailStatus = { status: 'failed', message: cleanText(error.message || 'Email delivery failed.') }
@@ -1479,6 +1502,10 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
         lighthouseWorkerConfigured: workerConfigured,
         crossSourceDeviceMerge: true,
         schedulerEnabled: true, persistence: initialized ? 'writable' : 'pending',
+        reportTime: settings.time,
+        nextRunAt: state.nextRunAt,
+        nextSundayHistoryEmailAt: state.nextHistoryEmailAt,
+        sundayHistoryWorkingDays: settings.historyWorkingDays,
         historyCount: state.history?.length || 0,
         error: initializationError
       }))
@@ -1508,7 +1535,7 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
     }
     if (req.method === 'GET' && requestPath === '/api/email-settings') {
       res.setHeader('Content-Type', 'application/json; charset=utf-8')
-      return res.end(JSON.stringify({ ...settings, nextMonthlyHistoryRunAt: state.nextHistoryEmailAt }))
+      return res.end(JSON.stringify({ ...settings, nextWeeklyHistoryRunAt: state.nextHistoryEmailAt }))
     }
     if (req.method === 'POST' && requestPath === '/api/email-settings') {
       try {
@@ -1523,13 +1550,15 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
           recipients,
           autoSendAfterCheck: next.autoSendAfterCheck === undefined ? settings.autoSendAfterCheck : next.autoSendAfterCheck === true,
           reportType: next.reportType === undefined ? settings.reportType : next.reportType === 'history' ? 'history' : 'benchmark',
-          monthlyHistoryEnabled: next.monthlyHistoryEnabled === undefined ? settings.monthlyHistoryEnabled : next.monthlyHistoryEnabled !== false
+          weeklyHistoryEnabled: next.weeklyHistoryEnabled === undefined ? settings.weeklyHistoryEnabled : next.weeklyHistoryEnabled !== false,
+          historyWorkingDays: 15,
+          reportingScheduleVersion: REPORTING_SCHEDULE_VERSION,
+          monthlyHistoryEnabled: false
         }
         await persistSettings()
         scheduleNextRun()
-        scheduleMonthlyHistoryRun()
         res.setHeader('Content-Type', 'application/json; charset=utf-8')
-        return res.end(JSON.stringify({ ...settings, nextMonthlyHistoryRunAt: state.nextHistoryEmailAt }))
+        return res.end(JSON.stringify({ ...settings, nextWeeklyHistoryRunAt: state.nextHistoryEmailAt }))
       } catch (error) {
         res.statusCode = 400
         return res.end(JSON.stringify({ error: cleanText(error.message) }))
@@ -1601,7 +1630,6 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
     })
     server.httpServer?.once('close', () => {
       if (timer) clearTimeout(timer)
-      if (monthlyTimer) clearTimeout(monthlyTimer)
       for (const pending of pendingWorkerRuns.values()) { clearTimeout(pending.timer); pending.reject(new Error('Application stopped before Lighthouse worker completed.')) }
       pendingWorkerRuns.clear()
     })
@@ -1645,7 +1673,7 @@ export default defineConfig(({ mode }) => {
   }
   const deploymentConfig = {
     recipients: [...new Set(String(env.EMAIL_RECIPIENTS || '').split(',').map(value => value.trim().toLowerCase()).filter(value => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)))],
-    time: /^([01]\d|2[0-3]):([0-5]\d)$/.test(env.REPORT_TIME || '') ? env.REPORT_TIME : '15:00',
+    time: /^([01]\d|2[0-3]):([0-5]\d)$/.test(env.REPORT_TIME || '') ? env.REPORT_TIME : '10:00',
     autoSendAfterCheck: String(env.AUTO_SEND_AFTER_CHECK || 'true').toLowerCase() === 'true',
     authConfigured: Boolean(env.ADMIN_PASSWORD && (env.ADMIN_EMAIL || env.SMTP_USER)),
     lighthouseFallbackMode: fallbackMode === 'managed' ? 'managed' : 'direct',

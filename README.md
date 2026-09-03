@@ -7,7 +7,8 @@ STC-branded React dashboard for comparing Mobile and Web Google PageSpeed scores
 - Six pre-saved standard websites displayed three per comparison section
 - Mobile and Web Performance, Accessibility, Best Practices, and SEO scores
 - One complete multi-site score check with strict completeness validation
-- Daily scheduled run at 3:00 PM Asia/Kuwait
+- Daily scheduled run at 10:00 AM Asia/Kuwait
+- Sunday email bundle with the completed benchmark and previous 15 Sunday–Thursday working days of score history
 - Saved email recipients and clean three-site-section HTML reports
 - Email delivery only after every required score is available
 - Excel-compatible CSV and printable PDF exports
@@ -27,7 +28,7 @@ STC-branded React dashboard for comparing Mobile and Web Google PageSpeed scores
 - `SMTP_USER` — Gmail sender address
 - `SMTP_APP_PASSWORD` — Gmail App Password
 - `EMAIL_RECIPIENTS` — optional comma-separated production recipient list (kept out of Git)
-- `REPORT_TIME` — optional daily/monthly report time in Kuwait, for example `15:00`
+- `REPORT_TIME` — optional daily report time in Kuwait; production default is `10:00`
 - `AUTO_SEND_AFTER_CHECK` — send the completed benchmark report after a successful manual scan (`true` by default)
 - `ADMIN_EMAIL` — Admin account and access-request notification address; falls back to `SMTP_USER`
 - `ADMIN_USERNAME` — initial Admin username (`admin` when omitted)

@@ -1242,7 +1242,7 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
       "After every completed scan",
   );
   const [emailTime, setEmailTime] = useState(
-    () => localStorage.getItem("benchmark-email-time") || "09:00",
+    () => localStorage.getItem("benchmark-email-time") || "10:00",
   );
   const [emailDay, setEmailDay] = useState(
     () => localStorage.getItem("benchmark-email-day") || "Sunday",
@@ -1858,7 +1858,7 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
           enabled: true,
           autoSendAfterCheck,
           reportType: emailReportType,
-          monthlyHistoryEnabled: true,
+          weeklyHistoryEnabled: true,
           ...overrides,
         }),
       });
@@ -2031,11 +2031,11 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
       time: emailTime,
       day: emailDay,
       reportType: emailReportType,
-      monthlyHistoryEnabled: true,
+      weeklyHistoryEnabled: true,
     });
     notify(
       canAutomate
-        ? "Recipients and daily/monthly report schedules saved"
+        ? "Recipients and daily/Sunday report schedules saved"
         : "Recipients and report schedules saved",
     );
   }
@@ -2046,7 +2046,7 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
     localStorage.setItem("benchmark-email-report-type", next);
     persistEmailSettings(emailRecipients, {
       reportType: next,
-      monthlyHistoryEnabled: true,
+      weeklyHistoryEnabled: true,
     });
   }
 
@@ -3105,8 +3105,8 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
                 <span>Automated reporting</span>
                 <h1>Emails to send</h1>
                 <p>
-                  Send the latest Benchmark Report or the complete Score History
-                  Report to the same saved recipients.
+                  Send the latest Benchmark Report or Score History Report to
+                  the same saved recipients, with automated Sunday history.
                 </p>
               </div>
               <div
@@ -3142,8 +3142,8 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
                   <span>Delivery setup</span>
                   <h2>Report recipient and schedule</h2>
                   <p>
-                    Select a report for manual sending. Monthly history delivery
-                    uses the same saved recipient list.
+                    Select a report for manual sending. Sunday delivery combines
+                    the completed benchmark with 15 prior working days of history.
                   </p>
                 </div>
                 {!permissions.canSendEmail && (
@@ -3298,7 +3298,7 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
                     <span>History schedule</span>
                     <div>
                       <History size={16} />
-                      <strong>First working day monthly</strong>
+                      <strong>Every Sunday · previous 15 working days</strong>
                     </div>
                   </label>
                   <label>
@@ -3316,8 +3316,8 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
                     </div>
                   </label>
                   <small className="timezone-note">
-                    Sunday–Thursday working week · Asia/Kuwait timezone. Next
-                    monthly history report:{" "}
+                    Daily at {emailTime || "10:00"} · Sunday–Thursday working week ·
+                    Asia/Kuwait timezone. Next Sunday history report:{" "}
                     {checkedTime(automation.nextHistoryEmailAt)}. The server
                     must stay running.
                   </small>
