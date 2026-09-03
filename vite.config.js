@@ -2,8 +2,9 @@ import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import nodemailer from 'nodemailer'
 import ExcelJS from 'exceljs'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { authPlugin } from './auth.mjs'
 import { parseLegacyDesktopHistory, parseLegacyMobileHistory } from './legacy-history.mjs'
@@ -33,6 +34,10 @@ function cleanText(value = '') {
     .replace(/`/g, '')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+function isLegacyWindowsLighthouseFailure(value) {
+  return /AppData\\Local\\Temp\\lighthouse\./i.test(String(value || ''))
 }
 
 function escapeHtml(value = '') {
@@ -152,6 +157,7 @@ async function runLighthouseFallback(targetUrl, strategy) {
   ])
   let chrome
   let lighthouseTimer
+  let userDataDir
   try {
     let chromePath = process.env.CHROME_PATH || undefined
     let chromeFlags = [
@@ -163,9 +169,23 @@ async function runLighthouseFallback(targetUrl, strategy) {
       chromePath = await chromium.executablePath()
       chromeFlags = [...chromium.args, '--ignore-certificate-errors', '--window-size=1440,900']
     }
+    // chrome-launcher creates profiles in the Windows Temp directory by
+    // default and removes them synchronously during kill(). Antivirus/indexing
+    // can keep those files locked briefly, which makes a successful audit fail
+    // with EPERM and can leave Chrome children behind. An explicit profile in
+    // an app-owned directory outside the Vite workspace keeps launcher cleanup
+    // from throwing and prevents Vite's watcher from touching Chrome's locked
+    // cookie files. We remove it asynchronously after the browser tree stops.
+    const profileRoot = process.env.LOCALAPPDATA
+      ? path.join(process.env.LOCALAPPDATA, 'WebPulse', 'lighthouse-profiles')
+      : path.join(tmpdir(), 'webpulse-lighthouse-profiles')
+    userDataDir = path.join(profileRoot, randomUUID())
+    await mkdir(userDataDir, { recursive: true })
     chrome = await launch({
       chromePath,
-      chromeFlags
+      chromeFlags,
+      userDataDir,
+      handleSIGINT: false
     })
     const mobile = strategy === 'mobile'
     const lighthouseRun = lighthouse(targetUrl, {
@@ -188,7 +208,11 @@ async function runLighthouseFallback(targetUrl, strategy) {
     return { lighthouseResult: result.lhr, auditSource: 'Direct Lighthouse fallback' }
   } finally {
     if (lighthouseTimer) clearTimeout(lighthouseTimer)
-    await chrome?.kill().catch(() => {})
+    try { chrome?.kill() } catch { /* audit result must not fail because profile cleanup is delayed */ }
+    if (userDataDir) {
+      await new Promise(resolve => setTimeout(resolve, 500))
+      await rm(userDataDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 }).catch(() => {})
+    }
   }
 }
 
@@ -1157,6 +1181,20 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
     settings.monthlyHistoryEnabled = settings.monthlyHistoryEnabled !== false
     settings.reportType = settings.reportType === 'history' ? 'history' : 'benchmark'
     state.standardUrls = STANDARD_URLS
+    // Do not keep showing failures produced by the retired Temp-profile
+    // launcher. Those messages describe an earlier run and cannot recur with
+    // the isolated app-owned profiles used by the current implementation.
+    if (isLegacyWindowsLighthouseFailure(state.error)) {
+      state.status = 'idle'
+      state.error = null
+      state.individualRun = null
+      state.progress = (state.progress || []).map(item =>
+        item?.status === 'failed' && isLegacyWindowsLighthouseFailure(item.message)
+          ? { ...item, status: 'queued', attempt: 0, message: null }
+          : item
+      )
+      state.emailStatus = { status: 'skipped', message: 'Previous local Lighthouse startup failure was cleared. Run a fresh score check when ready.' }
+    }
     state.history = mergeHistory(legacyHistory, Array.isArray(state.history) ? state.history : [])
     const seedSites = [...(Array.isArray(state.sites) ? state.sites : []), ...(state.progress || []).map(item => item.latestSite).filter(Boolean)]
     state.history = mergeHistory(state.history, seedSites.flatMap(historyRecordsForSite))

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFile, writeFile } from 'node:fs/promises'
+import JSZip from 'jszip'
 import { parseLegacyDesktopHistory, parseLegacyMobileHistory } from '../legacy-history.mjs'
 import { buildPptReportModel, createPptReportBytes, historyRange, orderPptDomains, PPT_DOMAIN_ORDER } from '../src/pptReport.js'
 
@@ -27,5 +28,12 @@ assert.equal(bytes[0], 0x50)
 assert.equal(bytes[1], 0x4b)
 // A valid native-chart deck is materially larger than the former corrupt SVG-only package.
 assert.ok(bytes.length > 100_000)
+const archive = await JSZip.loadAsync(bytes)
+const slideXml = (await Promise.all(Object.keys(archive.files).filter(name => /^ppt\/slides\/slide\d+\.xml$/.test(name)).map(name => archive.file(name).async('string')))).join('\n')
+const chartXml = (await Promise.all(Object.keys(archive.files).filter(name => /^ppt\/charts\/chart\d+\.xml$/.test(name)).map(name => archive.file(name).async('string')))).join('\n')
+assert.match(slideXml, /performance scores \(%\)/)
+assert.match(slideXml, /Scores: %/)
+assert.match(chartXml, /formatCode="0\.0&quot;%&quot;"/)
+assert.match(chartXml, /Performance score \(%\)/)
 if (process.argv[2]) await writeFile(process.argv[2], bytes)
 console.log(`PPT report validation passed: ${model.records.length} records, ${model.scanDates.length} dates, ${bytes.length} bytes.`)

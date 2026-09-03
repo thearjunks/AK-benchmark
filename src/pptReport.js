@@ -127,8 +127,8 @@ export function buildPptReportModel(history, domains, labels, fromDate, toDate) 
   }
 }
 
-function score(value) { return Number.isFinite(value) ? String(value) : 'N/A' }
-function signed(value) { return Number.isFinite(value) ? `${value > 0 ? '+' : ''}${value}` : 'N/A' }
+function score(value) { return Number.isFinite(value) ? `${value}%` : 'N/A' }
+function signed(value) { return Number.isFinite(value) ? `${value > 0 ? '+' : ''}${value} pp` : 'N/A' }
 
 function addHeader(pptx, slide) {
   slide.addShape(pptx.ShapeType.rect, { x: 0, y: 0, w: 13.333, h: .55, line: { color: DESKTOP, transparency: 100 }, fill: { color: DESKTOP } })
@@ -137,13 +137,14 @@ function addHeader(pptx, slide) {
 }
 
 function addFooter(slide) {
-  slide.addText('Source: saved benchmark score history · Asia/Kuwait', { x: 8.5, y: 7.18, w: 4.35, h: .15, fontFace: 'Arial', fontSize: 7, color: MUTED, align: 'right', margin: 0 })
+  slide.addText('Scores: % · Changes: percentage points (pp) · Source: saved benchmark history · Asia/Kuwait', { x: 6.75, y: 7.18, w: 6.1, h: .15, fontFace: 'Arial', fontSize: 7, color: MUTED, align: 'right', margin: 0 })
 }
 
 function addKpi(pptx, slide, x, title, value, detail, color = INK) {
+  const valueFontSize = String(value).length > 18 ? 16 : String(value).length > 14 ? 18 : 21
   slide.addShape(pptx.ShapeType.rect, { x, y: 5.32, w: 2.85, h: 1.02, line: { color: BORDER, width: 1 }, fill: { color: WHITE } })
   slide.addText(title, { x: x + .15, y: 5.48, w: 2.55, h: .18, fontFace: 'Arial', fontSize: 10, bold: true, color: MUTED, margin: 0, breakLine: false })
-  slide.addText(value, { x: x + .15, y: 5.76, w: 2.55, h: .3, fontFace: 'Arial', fontSize: 21, bold: true, color, margin: 0 })
+  slide.addText(value, { x: x + .15, y: 5.76, w: 2.55, h: .3, fontFace: 'Arial', fontSize: valueFontSize, bold: true, color, margin: 0, breakLine: false })
   slide.addText(detail, { x: x + .15, y: 6.14, w: 2.55, h: .14, fontFace: 'Arial', fontSize: 8, color: INK, margin: 0, breakLine: false })
 }
 
@@ -157,7 +158,7 @@ function addCover(pptx, model) {
   slide.addText('Mobile and desktop\nperformance snapshot', { x: 5.48, y: 1.85, w: 6.9, h: 1.1, fontFace: 'Arial', fontSize: 34, bold: true, color: INK, margin: 0, breakLine: false })
   slide.addText(`PPT Report: ${model.periodLabel}`, { x: 5.48, y: 3.26, w: 6.8, h: .3, fontFace: 'Arial', fontSize: 16, bold: true, color: DESKTOP, margin: 0 })
   slide.addText(`${model.sites.length} websites\n${model.scanDates.length} scan dates\n${model.records.length} saved score records`, { x: 5.48, y: 3.85, w: 3.7, h: .9, fontFace: 'Arial', fontSize: 14, bold: true, color: INK, breakLine: false, margin: 0, paraSpaceAfterPt: 9 })
-  slide.addText('Prepared from the Website Benchmark Dashboard', { x: 5.48, y: 6.25, w: 4.8, h: .2, fontFace: 'Arial', fontSize: 10, color: MUTED, margin: 0 })
+  slide.addText('All score values are percentages (0–100%). Changes are shown in percentage points (pp).', { x: 5.48, y: 6.15, w: 6.8, h: .4, fontFace: 'Arial', fontSize: 10, color: MUTED, margin: 0, breakLine: false })
 }
 
 function addComparison(pptx, model) {
@@ -165,8 +166,8 @@ function addComparison(pptx, model) {
   slide.background = { color: WHITE }
   addHeader(pptx, slide)
   slide.addText('Competitor performance at a glance', { x: .5, y: .77, w: 7.8, h: .4, fontFace: 'Arial', fontSize: 27, bold: true, color: INK, margin: 0 })
-  slide.addText(`PPT Report: ${model.periodLabel} · Average performance scores`, { x: .5, y: 1.18, w: 8, h: .2, fontFace: 'Arial', fontSize: 10, color: MUTED, margin: 0 })
-  ;[[4.45, MOBILE, 'Mobile'], [5.72, DESKTOP, 'Desktop']].forEach(([x, color, label]) => {
+  slide.addText(`PPT Report: ${model.periodLabel} · Average performance scores (%)`, { x: .5, y: 1.18, w: 8, h: .2, fontFace: 'Arial', fontSize: 10, color: MUTED, margin: 0 })
+  ;[[4.45, MOBILE, 'Mobile (%)'], [5.72, DESKTOP, 'Desktop (%)']].forEach(([x, color, label]) => {
     slide.addShape(pptx.ShapeType.line, { x, y: 1.68, w: .28, h: 0, line: { color, width: 5 } })
     slide.addText(label, { x: x + .4, y: 1.58, w: .8, h: .2, fontFace: 'Arial', fontSize: 10, color: INK, margin: 0 })
   })
@@ -176,7 +177,7 @@ function addComparison(pptx, model) {
     ;[[site.mobile, MOBILE, 0], [site.desktop, DESKTOP, .25]].forEach(([value, color, offset]) => {
       slide.addShape(pptx.ShapeType.roundRect, { x: 4.4, y: y + offset, w: 7.2, h: .18, line: { color: LIGHT, transparency: 100 }, fill: { color: LIGHT } })
       if (Number.isFinite(value)) slide.addShape(pptx.ShapeType.roundRect, { x: 4.4, y: y + offset, w: Math.max(.05, value / 100 * 7.2), h: .18, line: { color, transparency: 100 }, fill: { color } })
-      slide.addText(score(value), { x: 11.75, y: y + offset - .03, w: .6, h: .2, fontFace: 'Arial', fontSize: 10, bold: true, color, margin: 0 })
+      slide.addText(score(value), { x: 11.65, y: y + offset - .03, w: .75, h: .2, fontFace: 'Arial', fontSize: 10, bold: true, color, margin: 0 })
     })
   })
   slide.addText(`${model.records.length} saved score records · ${model.scanDates.length} scan dates · ${model.sites.length} websites`, { x: .5, y: 6.72, w: 6, h: .22, fontFace: 'Arial', fontSize: 10, bold: true, color: INK, margin: 0 })
@@ -188,7 +189,7 @@ function addSiteSlide(pptx, model, site) {
   slide.background = { color: WHITE }
   addHeader(pptx, slide)
   slide.addText(`${site.label} mobile and desktop performance`, { x: .5, y: .76, w: 11.9, h: .42, fontFace: 'Arial', fontSize: 25, bold: true, color: INK, margin: 0, breakLine: false })
-  slide.addText(`PPT Report: ${model.periodLabel} · ${model.grain === 'month' ? 'Monthly average' : 'Daily latest'} performance scores`, { x: .5, y: 1.18, w: 11, h: .2, fontFace: 'Arial', fontSize: 10, color: MUTED, margin: 0 })
+  slide.addText(`PPT Report: ${model.periodLabel} · ${model.grain === 'month' ? 'Monthly average' : 'Daily latest'} performance scores (%)`, { x: .5, y: 1.18, w: 11, h: .2, fontFace: 'Arial', fontSize: 10, color: MUTED, margin: 0 })
   slide.addChart(pptx.ChartType.line, [
     { name: 'Mobile', labels: site.labels, values: site.mobile },
     { name: 'Desktop', labels: site.labels, values: site.desktop }
@@ -196,17 +197,18 @@ function addSiteSlide(pptx, model, site) {
     x: .8, y: 1.55, w: 11.85, h: 3.45,
     chartColors: [MOBILE, DESKTOP], lineSize: 3, showMarker: true, markerSize: 5,
     showLegend: true, legendPos: 't', legendFontFace: 'Arial', legendFontSize: 9,
-    showTitle: true, title: `${site.label} performance progress`, titleFontFace: 'Arial', titleFontSize: 15,
-    showValue: true, dataLabelPosition: 't', dataLabelColor: INK, dataLabelFormatCode: '0',
+    showTitle: true, title: `${site.label} performance progress (%)`, titleFontFace: 'Arial', titleFontSize: 15,
+    showValue: true, dataLabelPosition: 't', dataLabelColor: INK, dataLabelFormatCode: '0.0"%"',
     catAxisLabelFontFace: 'Arial', catAxisLabelFontSize: 8,
-    valAxisLabelFontFace: 'Arial', valAxisLabelFontSize: 8, valAxisMinVal: 0, valAxisMaxVal: 100, valAxisMajorUnit: 20,
+    valAxisLabelFontFace: 'Arial', valAxisLabelFontSize: 8, valAxisLabelFormatCode: '0"%"', valAxisMinVal: 0, valAxisMaxVal: 100, valAxisMajorUnit: 20,
+    showValAxisTitle: true, valAxisTitle: 'Performance score (%)', valAxisTitleFontFace: 'Arial', valAxisTitleFontSize: 9,
     showValAxis: true, showCatAxis: true, showValGridLine: true, valGridLine: { color: 'E5E3E9', width: 1 },
     showCatGridLine: false, showBorder: true, border: { color: BORDER, width: 1 }
   })
-  addKpi(pptx, slide, .48, 'Mobile period average', score(site.kpis.mobileAverage), `${signed(site.kpis.mobileChange)} pts from first to latest`, MOBILE)
-  addKpi(pptx, slide, 3.45, 'Desktop period average', score(site.kpis.desktopAverage), `${signed(site.kpis.desktopChange)} pts from first to latest`, DESKTOP)
+  addKpi(pptx, slide, .48, 'Mobile period average', score(site.kpis.mobileAverage), `${signed(site.kpis.mobileChange)} from first to latest`, MOBILE)
+  addKpi(pptx, slide, 3.45, 'Desktop period average', score(site.kpis.desktopAverage), `${signed(site.kpis.desktopChange)} from first to latest`, DESKTOP)
   addKpi(pptx, slide, 6.42, 'Latest reading', `${score(site.kpis.latestMobile)} / ${score(site.kpis.latestDesktop)}`, `Mobile / Desktop${site.latestLabel ? ` on ${site.latestLabel}` : ''}`)
-  addKpi(pptx, slide, 9.39, 'Overall change', `${signed(site.kpis.mobileChange)} / ${signed(site.kpis.desktopChange)}`, 'Mobile / Desktop across period')
+  addKpi(pptx, slide, 9.39, 'Overall change', `${signed(site.kpis.mobileChange)} / ${signed(site.kpis.desktopChange)}`, 'Mobile / Desktop percentage-point change')
   slide.addText(`Key takeaway: ${site.takeaway}`, { x: .5, y: 6.67, w: 11.9, h: .22, fontFace: 'Arial', fontSize: 11, color: INK, margin: 0, breakLine: false })
   addFooter(slide)
 }
