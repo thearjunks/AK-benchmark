@@ -13,7 +13,8 @@
     "test:auth": "node scripts/auth-self-test.mjs",
     "test:single-site": "node scripts/single-site-self-test.mjs",
     "test:worker": "node scripts/lighthouse-worker.mjs --self-test",
-    "test:schedule": "node scripts/report-schedule-self-test.mjs"
+    "test:schedule": "node scripts/report-schedule-self-test.mjs",
+    "test:partial-report": "node scripts/partial-report-self-test.mjs"
   },
   "engines": {
     "node": ">=22.19"

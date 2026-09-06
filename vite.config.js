@@ -2,9 +2,8 @@ import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import nodemailer from 'nodemailer'
 import ExcelJS from 'exceljs'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
-import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { authPlugin } from './auth.mjs'
 import { parseLegacyDesktopHistory, parseLegacyMobileHistory } from './legacy-history.mjs'
@@ -13,19 +12,61 @@ const CATEGORIES = ['performance', 'accessibility', 'best-practices', 'seo']
 const SEVERITY_RANK = { Critical: 0, High: 1, Medium: 2, Low: 3 }
 const STANDARD_URLS = [
   'https://www.stc.com.kw/en',
-  'https://www.kw.zain.com/en/shop',
   'https://www.ooredoo.com.kw/en',
   'https://www.stc.com.sa/en/personal/home.html',
   'https://www.stc.com.bh/',
-  'https://www.virgin.com/'
+  'https://www.virgin.com/',
+  'https://www.kw.zain.com/en/shop'
 ]
 const DEVICE_METRICS = ['performance', 'accessibility', 'bestPractices', 'seo']
+const PAGE_SPEED_TIMEOUT_MS = 75_000
+const LIGHTHOUSE_TIMEOUT_MS = 90_000
+const AUTOMATION_BUDGET_MS = 18 * 60 * 1000
+const PRIMARY_SCAN_CONCURRENCY = 1
+
+export function classifyBatchFailures(failures = []) {
+  return { tolerated: [...failures], blocking: [], canSend: true }
+}
 
 export function standardUrlIndex(value) {
   try {
     const normalized = new URL(value).href
     return STANDARD_URLS.findIndex(url => new URL(url).href === normalized)
   } catch { return -1 }
+}
+
+export function automationAuditPhases(urls = STANDARD_URLS) {
+  const zainIndex = urls.findIndex(url => new URL(url).hostname.replace(/^www\./, '') === 'kw.zain.com')
+  return {
+    primaryIndices: urls.map((_, index) => index).filter(index => index !== zainIndex),
+    zainIndex
+  }
+}
+
+export function automatedEmailPhases({ zainPageSpeedSucceeded, zainLighthouseSucceeded } = {}) {
+  if (zainPageSpeedSucceeded) return ['daily']
+  return zainLighthouseSucceeded ? ['initial', 'updated'] : ['initial']
+}
+
+export function automationAuditPlan(zainPageSpeedSucceeded = false) {
+  const pageSpeedChecks = STANDARD_URLS.map(url => ({
+    domain: new URL(url).hostname.replace(/^www\./, ''),
+    provider: 'pagespeed'
+  }))
+  return zainPageSpeedSucceeded
+    ? pageSpeedChecks
+    : [...pageSpeedChecks, { domain: 'kw.zain.com', provider: 'lighthouse' }]
+}
+
+export function automationTimingPolicy() {
+  return {
+    pageSpeedTimeoutMs: PAGE_SPEED_TIMEOUT_MS,
+    lighthouseTimeoutMs: LIGHTHOUSE_TIMEOUT_MS,
+    batchBudgetMs: AUTOMATION_BUDGET_MS,
+    primaryConcurrency: PRIMARY_SCAN_CONCURRENCY,
+    providerAttempts: 1,
+    siteAttempts: 1
+  }
 }
 
 function cleanText(value = '') {
@@ -37,7 +78,7 @@ function cleanText(value = '') {
 }
 
 function isLegacyWindowsLighthouseFailure(value) {
-  return /AppData\\Local\\Temp\\lighthouse\./i.test(String(value || ''))
+  return /AppData\\Local\\(?:Temp\\lighthouse\.|WebPulse\\lighthouse-profiles)/i.test(String(value || ''))
 }
 
 function escapeHtml(value = '') {
@@ -116,7 +157,7 @@ async function runPageSpeed(targetUrl, strategy, apiKey, categories) {
   for (const category of categories) params.append('category', category)
 
   const response = await fetch(`https://www.googleapis.com/pagespeedonline/v5/runPagespeed?${params}`, {
-    signal: AbortSignal.timeout(180_000)
+    signal: AbortSignal.timeout(PAGE_SPEED_TIMEOUT_MS)
   })
   const data = await response.json().catch(() => ({}))
 
@@ -137,7 +178,7 @@ async function runPageSpeed(targetUrl, strategy, apiKey, categories) {
   return data
 }
 
-async function runPageSpeedWithRetry(targetUrl, strategy, apiKey, categories, attempts = 3, retryRuntimeErrors = false) {
+async function runPageSpeedWithRetry(targetUrl, strategy, apiKey, categories, attempts = 1, retryRuntimeErrors = false) {
   let lastError
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try { return await runPageSpeed(targetUrl, strategy, apiKey, categories) }
@@ -169,16 +210,12 @@ async function runLighthouseFallback(targetUrl, strategy) {
       chromePath = await chromium.executablePath()
       chromeFlags = [...chromium.args, '--ignore-certificate-errors', '--window-size=1440,900']
     }
-    // chrome-launcher creates profiles in the Windows Temp directory by
-    // default and removes them synchronously during kill(). Antivirus/indexing
-    // can keep those files locked briefly, which makes a successful audit fail
-    // with EPERM and can leave Chrome children behind. An explicit profile in
-    // an app-owned directory outside the Vite workspace keeps launcher cleanup
-    // from throwing and prevents Vite's watcher from touching Chrome's locked
-    // cookie files. We remove it asynchronously after the browser tree stops.
-    const profileRoot = process.env.LOCALAPPDATA
-      ? path.join(process.env.LOCALAPPDATA, 'WebPulse', 'lighthouse-profiles')
-      : path.join(tmpdir(), 'webpulse-lighthouse-profiles')
+    // Keep Chrome profiles in the ignored runtime folder. Processes started by
+    // restricted Windows launchers may only have read access to LOCALAPPDATA,
+    // while the project runtime folder is guaranteed to be writable.
+    const profileRoot = process.env.LIGHTHOUSE_PROFILE_ROOT
+      ? path.resolve(process.env.LIGHTHOUSE_PROFILE_ROOT)
+      : path.join(process.cwd(), 'work', 'lighthouse-profiles')
     userDataDir = path.join(profileRoot, randomUUID())
     await mkdir(userDataDir, { recursive: true })
     chrome = await launch({
@@ -201,7 +238,7 @@ async function runLighthouseFallback(targetUrl, strategy) {
     })
     const result = await Promise.race([
       lighthouseRun,
-      new Promise((_, reject) => { lighthouseTimer = setTimeout(() => reject(new Error('Direct Lighthouse audit timed out after 150 seconds.')), 150_000) })
+      new Promise((_, reject) => { lighthouseTimer = setTimeout(() => reject(new Error('Direct Lighthouse audit timed out after 90 seconds.')), LIGHTHOUSE_TIMEOUT_MS) })
     ])
     if (!result?.lhr) throw new Error('Lighthouse did not return an audit result.')
     if (result.lhr.runtimeError?.message) throw new Error(cleanText(result.lhr.runtimeError.message))
@@ -216,7 +253,7 @@ async function runLighthouseFallback(targetUrl, strategy) {
   }
 }
 
-async function runLighthouseWithRetry(targetUrl, strategy, attempts = 2) {
+async function runLighthouseWithRetry(targetUrl, strategy, attempts = 1) {
   let lastError
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try { return await runLighthouseFallback(targetUrl, strategy) }
@@ -233,16 +270,30 @@ function hasAllAuditCategoryScores(result) {
   return CATEGORIES.every(category => typeof categories[category]?.score === 'number')
 }
 
+async function runAuditByProvider(targetUrl, strategy, apiKey, provider, fallbackMode) {
+  if (provider === 'pagespeed') {
+    const result = await runPageSpeedWithRetry(targetUrl, strategy, apiKey, CATEGORIES, 1, false)
+    if (!hasAllAuditCategoryScores(result)) throw new Error(`${strategy} PageSpeed response did not contain all four Lighthouse category scores.`)
+    return { ...result, auditSource: 'Google PageSpeed Insights' }
+  }
+  if (provider === 'lighthouse') {
+    const result = await runLighthouseWithRetry(targetUrl, strategy, 1)
+    if (!hasAllAuditCategoryScores(result)) throw new Error(`${strategy} Lighthouse result did not contain all four category scores.`)
+    return result
+  }
+  return runAuditWithFallback(targetUrl, strategy, apiKey, fallbackMode)
+}
+
 async function runAuditWithFallback(targetUrl, strategy, apiKey, fallbackMode = 'direct') {
   const managedOnly = fallbackMode === 'managed'
   try {
-    const result = await runPageSpeedWithRetry(targetUrl, strategy, apiKey, CATEGORIES, managedOnly ? 4 : 3, managedOnly)
+    const result = await runPageSpeedWithRetry(targetUrl, strategy, apiKey, CATEGORIES, 1, managedOnly)
     if (!hasAllAuditCategoryScores(result)) throw new Error(`${strategy} response did not contain all four Lighthouse category scores.`)
     return { ...result, auditSource: managedOnly ? 'Google PageSpeed managed Lighthouse' : 'Google PageSpeed Insights' }
   } catch (pageSpeedError) {
     if (managedOnly) throw new Error(`Managed Lighthouse failed: ${cleanText(pageSpeedError.message)}`)
     try {
-      const result = await runLighthouseWithRetry(targetUrl, strategy)
+      const result = await runLighthouseWithRetry(targetUrl, strategy, 1)
       if (!hasAllAuditCategoryScores(result)) throw new Error(`${strategy} Lighthouse result did not contain all four category scores.`)
       return result
     } catch (lighthouseError) {
@@ -251,17 +302,15 @@ async function runAuditWithFallback(targetUrl, strategy, apiKey, fallbackMode = 
   }
 }
 
-async function analyzeWebsite(targetUrl, apiKey, fallbackMode = 'direct') {
+async function analyzeWebsite(targetUrl, apiKey, fallbackMode = 'direct', provider = 'fallback') {
   const target = new URL(targetUrl)
   if (!['http:', 'https:'].includes(target.protocol)) throw new Error('Only HTTP and HTTPS website URLs are supported.')
-  // PageSpeed can intermittently drop one of two simultaneous requests. Run
-  // devices sequentially and retry each device so a complete matrix is favored.
+  // Mobile and desktop form one website test and use the same selected provider.
   const settle = async strategy => {
-    try { return { status: 'fulfilled', value: await runAuditWithFallback(target.href, strategy, apiKey, fallbackMode) } }
+    try { return { status: 'fulfilled', value: await runAuditByProvider(target.href, strategy, apiKey, provider, fallbackMode) } }
     catch (reason) { return { status: 'rejected', reason } }
   }
-  const mobileResult = await settle('mobile')
-  const desktopResult = await settle('desktop')
+  const [mobileResult, desktopResult] = await Promise.all([settle('mobile'), settle('desktop')])
   const mobile = mobileResult.status === 'fulfilled' ? mobileResult.value : null
   const desktop = desktopResult.status === 'fulfilled' ? desktopResult.value : null
   if (!mobile && !desktop) throw new Error(`Mobile: ${mobileResult.reason?.message || 'scan failed'}. Web: ${desktopResult.reason?.message || 'scan failed'}.`)
@@ -541,11 +590,14 @@ function pageSpeedPlugin(apiKey, fallbackMode) {
 function createGmailTransporter(config) {
   return config.user && config.password ? nodemailer.createTransport({
     host: 'smtp.gmail.com', port: 587, secure: false,
-    auth: { user: config.user, pass: config.password.replace(/\s/g, '') }
+    auth: { user: config.user, pass: config.password.replace(/\s/g, '') },
+    connectionTimeout: 20_000,
+    greetingTimeout: 20_000,
+    socketTimeout: 30_000
   }) : null
 }
 
-function buildMatrixEmail(sites) {
+export function buildMatrixEmail(sites) {
   const emailMetrics = [['performance', 'Performance'], ['accessibility', 'Accessibility'], ['bestPractices', 'Best practices'], ['seo', 'SEO']]
   const scoreStyle = value => {
     if (typeof value !== 'number') return 'background:#f4f4f5;color:#8b9296'
@@ -556,12 +608,19 @@ function buildMatrixEmail(sites) {
   }
   const groups = Array.from({ length: Math.ceil(sites.length / 3) }, (_, index) => sites.slice(index * 3, index * 3 + 3))
   const renderGroup = (group, groupIndex) => {
-    const siteHeaders = group.map(site => `<th style="padding:12px;border-left:1px solid #e5e6e8;text-align:left;min-width:190px"><div style="font-size:13px;color:#1d252d">${escapeHtml(site.domain)}</div><div style="font-size:11px;color:#7d858a;margin-top:3px">Overall score <strong style="float:right;font-size:22px;color:#4f008c">${escapeHtml(site.overall ?? '—')}</strong></div></th>`).join('')
+    const siteHeaders = group.map(site => {
+      const unavailable = site.auditUnavailable === true || (site.pending === true && !site.coverage?.mobile && !site.coverage?.desktop)
+      const overall = unavailable && !site.coverage?.mobile && !site.coverage?.desktop ? 'N/A' : (site.overall ?? '—')
+      const availability = unavailable
+        ? `<div style="font-size:9px;color:#c80025;margin-top:4px">${site.pending ? 'Extended audit pending' : 'Partial or unavailable this run'}</div>`
+        : ''
+      return `<th style="padding:12px;border-left:1px solid #e5e6e8;text-align:left;min-width:190px"><div style="font-size:13px;color:#1d252d">${escapeHtml(site.domain)}</div><div style="font-size:11px;color:#7d858a;margin-top:3px">Overall score <strong style="float:right;font-size:22px;color:#4f008c">${escapeHtml(overall)}</strong></div>${availability}</th>`
+    }).join('')
     const rows = emailMetrics.map(([key, label]) => `<tr>
       <td style="padding:13px 12px;border-top:1px solid #e5e6e8;font-size:12px;font-weight:700;color:#1d252d">${escapeHtml(label)}<div style="font-size:9px;font-weight:400;color:#8b9296;margin-top:3px">0–100 score</div></td>
       ${group.map(site => {
-        const mobile = site.deviceScores?.mobile?.[key]
-        const web = site.deviceScores?.desktop?.[key]
+        const mobile = site.coverage?.mobile === false ? null : site.deviceScores?.mobile?.[key]
+        const web = site.coverage?.desktop === false ? null : site.deviceScores?.desktop?.[key]
         return `<td style="padding:8px;border-left:1px solid #e5e6e8;border-top:1px solid #e5e6e8"><table role="presentation" style="width:100%;border-spacing:5px 0"><tr><td style="${scoreStyle(mobile)};padding:10px;border-radius:7px;font-size:10px">Mobile <strong style="float:right;font-size:17px">${escapeHtml(mobile ?? '—')}</strong></td><td style="${scoreStyle(web)};padding:10px;border-radius:7px;font-size:10px">Web <strong style="float:right;font-size:17px">${escapeHtml(web ?? '—')}</strong></td></tr></table></td>`
       }).join('')}
     </tr>`).join('')
@@ -569,15 +628,20 @@ function buildMatrixEmail(sites) {
   }
   const generatedAt = new Date().toLocaleString('en-GB', { timeZone: 'Asia/Kuwait', dateStyle: 'medium', timeStyle: 'short' })
   const html = `<div style="font-family:Arial,sans-serif;color:#1d252d;max-width:900px;margin:auto;background:#f7f7f8;padding:20px"><div style="background:#fff;border:1px solid #dedfe1;border-radius:12px;overflow:hidden"><div style="padding:20px;border-bottom:1px solid #e5e6e8"><div style="font-size:10px;letter-spacing:1px;font-weight:700;color:#4f008c;text-transform:uppercase">Score comparison</div><div style="font-size:20px;font-weight:700;margin-top:5px">Mobile and Web benchmark matrix</div><div style="font-size:11px;color:#7d858a;margin-top:5px">${sites.length} websites · grouped three per section</div></div><div style="padding:16px">${groups.map(renderGroup).join('')}</div><div style="padding:12px 20px;border-top:1px solid #e5e6e8;font-size:9px;color:#8b9296">Generated ${escapeHtml(generatedAt)} Kuwait time · Google PageSpeed Insights</div></div></div>`
-  const text = `Mobile and Web benchmark matrix\n\n${sites.map(site => [`${site.domain} — Overall ${site.overall ?? '—'}`, ...emailMetrics.map(([key, label]) => `${label}: Mobile ${site.deviceScores?.mobile?.[key] ?? '—'} | Web ${site.deviceScores?.desktop?.[key] ?? '—'}`)].join('\n')).join('\n\n')}`
+  const text = `Mobile and Web benchmark matrix\n\n${sites.map(site => {
+    const unavailable = site.auditUnavailable || (site.pending && !site.coverage?.mobile && !site.coverage?.desktop)
+    const overall = unavailable && !site.coverage?.mobile && !site.coverage?.desktop ? 'N/A' : (site.overall ?? '—')
+    const availability = unavailable ? (site.pending ? ' (extended audit pending)' : ' (partial or unavailable this run)') : ''
+    return [`${site.domain} — Overall ${overall}${availability}`, ...emailMetrics.map(([key, label]) => `${label}: Mobile ${site.coverage?.mobile === false ? 'N/A' : (site.deviceScores?.mobile?.[key] ?? '—')} | Web ${site.coverage?.desktop === false ? 'N/A' : (site.deviceScores?.desktop?.[key] ?? '—')}`)].join('\n')
+  }).join('\n\n')}`
   return { html, text }
 }
 
-async function sendMatrixEmail(transporter, config, recipients, sites) {
+async function sendMatrixEmail(transporter, config, recipients, sites, options = {}) {
   const { html, text } = buildMatrixEmail(sites)
   return transporter.sendMail({
     from: `STC Website Benchmark <${config.user}>`, to: recipients,
-    subject: `Mobile and Web benchmark matrix — ${sites.length} ${sites.length === 1 ? 'website' : 'websites'}`,
+    subject: options.subject || `Mobile and Web benchmark matrix — ${sites.length} ${sites.length === 1 ? 'website' : 'websites'}`,
     text, html
   })
 }
@@ -659,29 +723,28 @@ async function sendHistoryEmail(transporter, config, recipients, history) {
   })
 }
 
-export function buildSundayBenchmarkEmail(sites, history, now = Date.now()) {
-  const selectedHistory = filterPreviousKuwaitWorkingDays(history, now, 15)
-  const matrix = buildMatrixEmail(sites)
-  const historyReport = buildHistoryEmail(selectedHistory)
-  const workingDates = previousKuwaitWorkingDateKeys(now, 15)
-  const periodLabel = `${workingDates[0]} to ${workingDates.at(-1)}`
+export function buildSundayHistoryEmail(history, now = Date.now()) {
+  const selectedHistory = filterPreviousKuwaitDays(history, now, 15)
+  const dateKeys = previousKuwaitDateKeys(now, 15)
+  const periodLabel = `${dateKeys[0]} to ${dateKeys.at(-1)}`
+  const historyReport = selectedHistory.length ? buildHistoryEmail(selectedHistory) : null
   const historyHtml = selectedHistory.length
     ? historyReport.html
-    : `<div style="font-family:Arial,sans-serif;max-width:900px;margin:16px auto;padding:18px;border:1px solid #dedfe1;border-radius:12px"><h2 style="margin:0 0 6px">Previous 15 working days</h2><p style="margin:0;color:#7d858a">No saved history was available for ${escapeHtml(periodLabel)}.</p></div>`
+    : `<div style="font-family:Arial,sans-serif;max-width:900px;margin:16px auto;padding:18px;border:1px solid #dedfe1;border-radius:12px"><h2 style="margin:0 0 6px">Previous 15 days</h2><p style="margin:0;color:#7d858a">No saved history was available for ${escapeHtml(periodLabel)}.</p></div>`
   return {
-    subject: `Sunday Website Benchmark Report + 15 Working Day History — ${new Date(now).toLocaleDateString('en-GB', { timeZone: 'Asia/Kuwait' })}`,
-    text: `${matrix.text}\n\nPrevious 15 Kuwait working days (${periodLabel})\n\n${selectedHistory.length ? historyReport.text : 'No saved history was available for this period.'}`,
-    html: `${matrix.html}${historyHtml}`,
+    subject: `Sunday Website Score History — Previous 15 Days — ${new Date(now).toLocaleDateString('en-GB', { timeZone: 'Asia/Kuwait' })}`,
+    text: `Website Score History — Previous 15 days (${periodLabel})\n\n${selectedHistory.length ? historyReport.text : 'No saved history was available for this period.'}`,
+    html: historyHtml,
     selectedHistory,
-    workingDates,
+    dateKeys,
     periodLabel
   }
 }
 
-async function sendSundayBenchmarkEmail(transporter, config, recipients, sites, history, now = Date.now()) {
-  const report = buildSundayBenchmarkEmail(sites, history, now)
+async function sendSundayHistoryEmail(transporter, config, recipients, history, now = Date.now()) {
+  const report = buildSundayHistoryEmail(history, now)
   const attachments = report.selectedHistory.length ? [{
-    filename: `website-benchmark-history-15-working-days-${new Date(now).toISOString().slice(0, 10)}.xlsx`,
+    filename: `website-benchmark-history-previous-15-days-${new Date(now).toISOString().slice(0, 10)}.xlsx`,
     content: Buffer.from(await buildHistoryWorkbook(report.selectedHistory)),
     contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
   }] : []
@@ -744,7 +807,7 @@ function emailReportPlugin(config) {
   }
 }
 
-const REPORTING_SCHEDULE_VERSION = 3
+const REPORTING_SCHEDULE_VERSION = 4
 
 function nextKuwaitRun(time = '10:00', now = Date.now()) {
   const [hour, minute] = /^([01]\d|2[0-3]):([0-5]\d)$/.test(time) ? time.split(':').map(Number) : [10, 0]
@@ -759,22 +822,20 @@ export function isKuwaitSunday(now = Date.now()) {
   return new Date(value + 3 * 60 * 60 * 1000).getUTCDay() === 0
 }
 
-export function previousKuwaitWorkingDateKeys(now = Date.now(), count = 15) {
+export function previousKuwaitDateKeys(now = Date.now(), count = 15) {
   const value = typeof now === 'number' ? now : new Date(now).getTime()
   const kuwaitNow = new Date(value + 3 * 60 * 60 * 1000)
   let cursor = Date.UTC(kuwaitNow.getUTCFullYear(), kuwaitNow.getUTCMonth(), kuwaitNow.getUTCDate())
   const dates = []
   while (dates.length < count) {
     cursor -= 24 * 60 * 60 * 1000
-    const date = new Date(cursor)
-    const weekday = date.getUTCDay()
-    if (weekday >= 0 && weekday <= 4) dates.push(date.toISOString().slice(0, 10))
+    dates.push(new Date(cursor).toISOString().slice(0, 10))
   }
   return dates.reverse()
 }
 
-export function filterPreviousKuwaitWorkingDays(history, now = Date.now(), count = 15) {
-  const included = new Set(previousKuwaitWorkingDateKeys(now, count))
+export function filterPreviousKuwaitDays(history, now = Date.now(), count = 15) {
+  const included = new Set(previousKuwaitDateKeys(now, count))
   return history.filter(record => included.has(historyDateKey(record.checkedAt)))
 }
 
@@ -794,7 +855,17 @@ async function readJson(file, fallback) {
 
 async function writeJson(file, value) {
   await mkdir(path.dirname(file), { recursive: true })
-  await writeFile(file, JSON.stringify(value, null, 2), 'utf8')
+  await atomicWriteFile(file, JSON.stringify(value, null, 2), 'utf8')
+}
+
+async function atomicWriteFile(file, data, encoding) {
+  const temporaryFile = `${file}.${process.pid}.${randomUUID()}.tmp`
+  try {
+    await writeFile(temporaryFile, data, encoding)
+    await rename(temporaryFile, file)
+  } finally {
+    await rm(temporaryFile, { force: true }).catch(() => {})
+  }
 }
 
 async function readLegacyHistory() {
@@ -816,10 +887,11 @@ const WEBSITE_META = {
   'virgin.com': { name: 'Virgin', page: 'Homepage', sheet: 'Virgin' }
 }
 
-function historyRecordsForSite(site) {
+export function historyRecordsForSite(site) {
   if (!site?.domain || !site?.scannedAt) return []
   const meta = WEBSITE_META[site.domain] || { name: site.domain, page: new URL(site.url || `https://${site.domain}`).pathname || '/', sheet: site.domain }
   return [['mobile', 'Mobile'], ['desktop', 'Web']].map(([deviceKey, deviceLabel]) => {
+    if (site.coverage?.[deviceKey] !== true) return null
     const scores = site.deviceScores?.[deviceKey] || {}
     const scoreValues = DEVICE_METRICS.map(metric => scores[metric]).filter(value => typeof value === 'number')
     if (scoreValues.length !== DEVICE_METRICS.length) return null
@@ -1128,12 +1200,22 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
   const workerRepository = String(deploymentConfig.lighthouseWorkerRepository || '')
   const workerConfigured = /^[\w.-]+\/[\w.-]+$/.test(workerRepository) && Boolean(deploymentConfig.githubActionsToken && deploymentConfig.lighthouseCallbackToken && deploymentConfig.publicAppUrl)
   const pendingWorkerRuns = new Map()
+  let stateWriteQueue = Promise.resolve()
+  let historyWriteQueue = Promise.resolve()
 
-  const persistState = () => writeJson(stateFile, state)
+  const persistState = () => {
+    const snapshot = JSON.parse(JSON.stringify(state))
+    stateWriteQueue = stateWriteQueue.catch(() => {}).then(() => writeJson(stateFile, snapshot))
+    return stateWriteQueue
+  }
   const persistSettings = () => writeJson(settingsFile, settings)
-  const persistHistoryBackup = async () => {
-    await mkdir(path.dirname(historyBackupFile), { recursive: true })
-    await writeFile(historyBackupFile, Buffer.from(await buildHistoryWorkbook(state.history || [])))
+  const persistHistoryBackup = () => {
+    const historySnapshot = JSON.parse(JSON.stringify(state.history || []))
+    historyWriteQueue = historyWriteQueue.catch(() => {}).then(async () => {
+      await mkdir(path.dirname(historyBackupFile), { recursive: true })
+      await atomicWriteFile(historyBackupFile, Buffer.from(await buildHistoryWorkbook(historySnapshot)))
+    })
+    return historyWriteQueue
   }
 
   function verifyWorkerSignature(body, signature) {
@@ -1142,7 +1224,7 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
     return supplied.length === expected.length && timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))
   }
 
-  async function runGitHubLighthouse(url) {
+  async function runGitHubLighthouse(url, timeoutMs = 7 * 60 * 1000) {
     if (!workerConfigured) throw new Error('GitHub Lighthouse worker is not configured.')
     const requestId = randomUUID()
     let resolveRun
@@ -1150,8 +1232,8 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
     const result = new Promise((resolve, reject) => { resolveRun = resolve; rejectRun = reject })
     const timer = setTimeout(() => {
       pendingWorkerRuns.delete(requestId)
-      rejectRun(new Error('GitHub Lighthouse worker timed out after 14 minutes.'))
-    }, 14 * 60 * 1000)
+      rejectRun(new Error(`GitHub Lighthouse worker timed out after ${Math.ceil(timeoutMs / 60_000)} minutes.`))
+    }, timeoutMs)
     pendingWorkerRuns.set(requestId, { url: new URL(url).href, resolve: resolveRun, reject: rejectRun, timer })
 
     const callbackUrl = new URL('/api/lighthouse-worker/callback', deploymentConfig.publicAppUrl).href
@@ -1198,6 +1280,7 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
     state = await readJson(stateFile, bundledState)
     const legacyHistory = await readLegacyHistory()
     const resumeInterruptedRun = state.status === 'running'
+    const interruptedIndividualRun = state.individualRun?.status === 'running'
     const persistedSettings = await readJson(settingsFile, {})
     settings = { ...settings, ...persistedSettings }
     if (settings.reportingScheduleVersion !== REPORTING_SCHEDULE_VERSION) {
@@ -1205,18 +1288,20 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
       settings.weeklyHistoryEnabled = true
       settings.historyWorkingDays = 15
       settings.monthlyHistoryEnabled = false
+      settings.autoSendAfterCheck = true
       settings.reportingScheduleVersion = REPORTING_SCHEDULE_VERSION
     }
     settings.time = '10:00'
     if (!settings.recipients.length && deploymentConfig.recipients?.length) settings.recipients = deploymentConfig.recipients
-    settings.autoSendAfterCheck = settings.autoSendAfterCheck === true
+    settings.enabled = settings.enabled !== false
+    settings.autoSendAfterCheck = settings.autoSendAfterCheck !== false
     settings.weeklyHistoryEnabled = settings.weeklyHistoryEnabled !== false
     settings.monthlyHistoryEnabled = false
     settings.reportType = settings.reportType === 'history' ? 'history' : 'benchmark'
     state.standardUrls = STANDARD_URLS
-    // Do not keep showing failures produced by the retired Temp-profile
-    // launcher. Those messages describe an earlier run and cannot recur with
-    // the isolated app-owned profiles used by the current implementation.
+    // Do not keep showing failures produced by either retired Windows profile
+    // location. Those messages describe earlier runs and cannot recur with the
+    // writable runtime profiles used by the current implementation.
     if (isLegacyWindowsLighthouseFailure(state.error)) {
       state.status = 'idle'
       state.error = null
@@ -1227,6 +1312,13 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
           : item
       )
       state.emailStatus = { status: 'skipped', message: 'Previous local Lighthouse startup failure was cleared. Run a fresh score check when ready.' }
+    } else if (interruptedIndividualRun) {
+      state.individualRun = {
+        ...state.individualRun,
+        status: 'failed',
+        updatedAt: new Date().toISOString(),
+        error: 'The individual score check was interrupted when the local application restarted. Run it again when ready.'
+      }
     }
     state.history = mergeHistory(legacyHistory, Array.isArray(state.history) ? state.history : [])
     const seedSites = [...(Array.isArray(state.sites) ? state.sites : []), ...(state.progress || []).map(item => item.latestSite).filter(Boolean)]
@@ -1256,13 +1348,16 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
   async function runAutomation(trigger) {
     if (running || individualRunning) return running || individualRunning
     running = (async () => {
-      const stagedSites = []
       const stagedIssues = []
-      const failures = []
+      const primaryFailures = []
       const resetSites = STANDARD_URLS.map(zeroScoreSite)
+      const { zainIndex, primaryIndices } = automationAuditPhases()
+      const startedAt = Date.now()
+      const deadlineAt = startedAt + AUTOMATION_BUDGET_MS
       state = {
         ...state, status: 'running', trigger, lastAttemptAt: new Date().toISOString(),
-        error: null, emailStatus: null, individualRun: null, sites: resetSites, issues: [],
+        deadlineAt: new Date(deadlineAt).toISOString(), automationBudgetMinutes: AUTOMATION_BUDGET_MS / 60_000,
+        phase: 'primary-audits', error: null, warning: null, emailStatus: null, individualRun: null, sites: resetSites, issues: [],
         progress: STANDARD_URLS.map((url, index) => ({
           url,
           domain: resetSites[index].domain,
@@ -1270,94 +1365,167 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
           attempt: 0,
           overall: 0,
           checkedAt: null,
+          message: index === zainIndex ? 'Runs last with Google PageSpeed Insights.' : null,
           latestSite: resetSites[index]
         }))
       }
       await persistState()
-      try {
-        for (let index = 0; index < STANDARD_URLS.length; index += 1) {
-          const url = STANDARD_URLS[index]
-          const canUseWorker = workerConfigured && new URL(url).hostname.replace(/^www\./, '') === 'kw.zain.com'
-          let result = null
-          let partialResult = null
-          let lastError = null
-          for (let attempt = 1; attempt <= (canUseWorker ? 1 : 2); attempt += 1) {
-            state.progress[index] = { ...state.progress[index], status: 'scanning', attempt }
-            await persistState()
-            try {
-              const candidate = await analyzeWebsite(url, apiKey, deploymentConfig.lighthouseFallbackMode)
-              partialResult = mergeAuditAnalyses(partialResult, candidate, url)
-              if (hasCompleteScoreMatrix(partialResult.site)) {
-                result = partialResult
-                break
-              }
-              lastError = new Error('Mobile or Web score columns are incomplete.')
-            } catch (error) { lastError = error }
+      const recipients = Array.isArray(settings.recipients) ? settings.recipients.filter(Boolean) : []
+      const shouldSendEmail = trigger === 'scheduled' || (trigger === 'manual' && settings.autoSendAfterCheck)
+
+      const scanSite = async (index, provider = 'pagespeed') => {
+        const url = STANDARD_URLS[index]
+        const domain = new URL(url).hostname.replace(/^www\./, '')
+        const maxAttempts = 1
+        let result = null
+        let partialResult = null
+        let lastError = null
+        for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+          state.progress[index] = {
+            ...state.progress[index], status: 'scanning', attempt, provider,
+            message: provider === 'lighthouse' ? 'One Lighthouse retry is in progress.' : 'Google PageSpeed Insights audit in progress.'
           }
-          if (!result && canUseWorker) {
-            state.progress[index] = { ...state.progress[index], status: 'scanning', message: 'Waiting for GitHub Actions Lighthouse.' }
-            await persistState()
-            try {
-              const workerResult = await runGitHubLighthouse(url)
-              result = mergeAuditAnalyses(partialResult, workerResult, url)
-              if (!hasCompleteScoreMatrix(result.site)) {
-                partialResult = result
-                result = null
-                lastError = new Error('PageSpeed and Lighthouse did not complete both Mobile and Web score columns.')
-              }
-            } catch (error) { lastError = error }
-          }
-          if (!result) {
-            state.progress[index] = { ...state.progress[index], status: 'failed', message: cleanText(lastError?.message || 'Score check failed.') }
-            failures.push(`${state.progress[index].domain}: ${state.progress[index].message}`)
-            await persistState()
-            continue
-          }
+          await persistState()
+          try {
+            const remainingMs = deadlineAt - Date.now()
+            if (remainingMs <= 0) throw new Error('The 18-minute automation time limit was reached.')
+            let budgetTimer
+            const candidate = await Promise.race([
+              provider === 'lighthouse' && workerConfigured && domain === 'kw.zain.com'
+                ? runGitHubLighthouse(url, Math.min(7 * 60 * 1000, remainingMs))
+                : analyzeWebsite(url, apiKey, deploymentConfig.lighthouseFallbackMode, provider),
+              new Promise((_, reject) => { budgetTimer = setTimeout(() => reject(new Error('The 18-minute automation time limit was reached.')), remainingMs) })
+            ]).finally(() => clearTimeout(budgetTimer))
+            partialResult = mergeAuditAnalyses(partialResult, candidate, url)
+            if (hasCompleteScoreMatrix(partialResult.site)) {
+              result = partialResult
+              break
+            }
+            lastError = new Error('Mobile or Web score columns are incomplete.')
+          } catch (error) { lastError = error }
+        }
+        if (result) {
           result.site.standardUrl = url
           result.site.scannedAt = new Date().toISOString()
-          stagedSites.push(result.site)
           stagedIssues.push(...result.issues)
           state.history = mergeHistory(state.history, historyRecordsForSite(result.site))
           state.sites[index] = result.site
           state.issues = [...stagedIssues]
-          state.progress[index] = { ...state.progress[index], domain: result.site.domain, status: 'complete', overall: result.site.overall, checkedAt: result.site.scannedAt, latestSite: result.site }
+          state.progress[index] = { ...state.progress[index], domain, status: 'complete', overall: result.site.overall, checkedAt: result.site.scannedAt, latestSite: result.site, message: null }
           await persistState()
           await persistHistoryBackup()
+          return { success: true, domain, site: result.site }
         }
 
-        if (failures.length) throw new Error(failures.join(' | '))
-
-        const completedAt = new Date().toISOString()
-        state = { ...state, status: 'completed', sites: stagedSites, issues: stagedIssues, lastCompletedAt: completedAt, error: null }
-        await persistState()
-
-        const recipients = Array.isArray(settings.recipients) ? settings.recipients.filter(Boolean) : []
-        const shouldSendEmail = trigger === 'scheduled' || (trigger === 'manual' && settings.autoSendAfterCheck)
-        if (!shouldSendEmail) {
-          state.emailStatus = { status: 'skipped', message: 'Manual score check completed. Use Send report now if needed.' }
-        } else if (recipients.length && transporter) {
-          try {
-            await transporter.verify()
-            if (trigger === 'scheduled' && settings.weeklyHistoryEnabled && isKuwaitSunday(completedAt)) {
-              const sundayHistory = filterPreviousKuwaitWorkingDays(state.history || [], completedAt, settings.historyWorkingDays || 15)
-              await sendSundayBenchmarkEmail(transporter, emailConfig, recipients, stagedSites, state.history || [], completedAt)
-              state.historyEmailStatus = {
-                status: 'sent', trigger: 'weekly-sunday', sentAt: new Date().toISOString(),
-                recipients: recipients.length, records: sundayHistory.length, workingDays: 15
-              }
-            } else {
-              await sendMatrixEmail(transporter, emailConfig, recipients, stagedSites)
-            }
-            state.emailStatus = { status: 'sent', sentAt: new Date().toISOString(), recipients: recipients.length }
-          } catch (error) {
-            state.emailStatus = { status: 'failed', message: cleanText(error.message || 'Email delivery failed.') }
+        const message = cleanText(lastError?.message || 'Score check failed.')
+        const resetSite = zeroScoreSite(url, index)
+        const failedSite = partialResult?.site ? {
+          ...resetSite, ...partialResult.site, domain, url, standardUrl: url,
+          status: 'Unavailable', pending: false, auditUnavailable: true, scanWarning: message,
+          deviceScores: {
+            mobile: hasCompleteDeviceScores(partialResult.site, 'mobile') ? partialResult.site.deviceScores.mobile : resetSite.deviceScores.mobile,
+            desktop: hasCompleteDeviceScores(partialResult.site, 'desktop') ? partialResult.site.deviceScores.desktop : resetSite.deviceScores.desktop
+          },
+          coverage: {
+            mobile: hasCompleteDeviceScores(partialResult.site, 'mobile'),
+            desktop: hasCompleteDeviceScores(partialResult.site, 'desktop')
           }
+        } : { ...resetSite, status: 'Unavailable', pending: false, auditUnavailable: true, scanWarning: message }
+        state.sites[index] = failedSite
+        if (partialResult?.issues?.length) {
+          stagedIssues.push(...partialResult.issues)
+          state.issues = [...stagedIssues]
+        }
+        state.history = mergeHistory(state.history, historyRecordsForSite(failedSite))
+        state.progress[index] = { ...state.progress[index], status: 'failed', message, latestSite: failedSite }
+        await persistState()
+        await persistHistoryBackup()
+        return { success: false, domain, message, site: failedSite }
+      }
+
+      const deliverPhaseReport = async (sites, phase, sentAt) => {
+        if (!shouldSendEmail) return { status: 'skipped', message: 'Auto-Send Email is disabled for this manual score check.' }
+        if (!recipients.length || !transporter) return { status: 'skipped', message: recipients.length ? 'Gmail is not configured.' : 'No saved recipients.' }
+        try {
+          await transporter.verify()
+          const subject = phase === 'initial'
+            ? 'Mobile and Web benchmark report — Zain unavailable in PageSpeed'
+            : phase === 'updated'
+              ? 'Updated Mobile and Web benchmark report — Zain Lighthouse scores included'
+              : 'Daily Mobile and Web benchmark report'
+          await sendMatrixEmail(transporter, emailConfig, recipients, sites, { subject })
+          return { status: 'sent', phase, sentAt: new Date().toISOString(), recipients: recipients.length }
+        } catch (error) {
+          return { status: 'failed', phase, message: cleanText(error.message || 'Email delivery failed.') }
+        }
+      }
+
+      const deliverSundayHistoryReport = async sentAt => {
+        if (trigger !== 'scheduled' || !settings.weeklyHistoryEnabled || !isKuwaitSunday(sentAt)) return null
+        if (!recipients.length || !transporter) return { status: 'skipped', message: recipients.length ? 'Gmail is not configured.' : 'No saved recipients.' }
+        try {
+          await transporter.verify()
+          const selectedHistory = filterPreviousKuwaitDays(state.history || [], sentAt, 15)
+          await sendSundayHistoryEmail(transporter, emailConfig, recipients, state.history || [], sentAt)
+          return {
+            status: 'sent', trigger: 'weekly-sunday', sentAt: new Date().toISOString(),
+            recipients: recipients.length, records: selectedHistory.length, calendarDays: 15
+          }
+        } catch (error) {
+          return { status: 'failed', trigger: 'weekly-sunday', message: cleanText(error.message || 'Sunday history email failed.') }
+        }
+      }
+
+      try {
+        for (const index of primaryIndices) {
+          const outcome = await scanSite(index, 'pagespeed')
+          if (!outcome.success) primaryFailures.push(outcome)
+        }
+
+        const zainPageSpeedOutcome = await scanSite(zainIndex, 'pagespeed')
+        const completedAt = new Date().toISOString()
+        let zainLighthouseOutcome = null
+        let firstDelivery
+        let finalEmailStatus
+        if (zainPageSpeedOutcome.success) {
+          firstDelivery = await deliverPhaseReport([...state.sites], 'daily', completedAt)
+          finalEmailStatus = { ...firstDelivery, zainPageSpeed: 'complete', zainUpdate: 'not-required' }
         } else {
-          state.emailStatus = { status: 'skipped', message: recipients.length ? 'Gmail is not configured.' : 'No saved recipients.' }
+          state.phase = 'initial-report'
+          await persistState()
+          firstDelivery = await deliverPhaseReport(state.sites.filter((_, index) => index !== zainIndex), 'initial', completedAt)
+          state.emailStatus = { ...firstDelivery, zainPageSpeed: 'failed', zainUpdate: 'pending' }
+          state.phase = 'zain-lighthouse-retry'
+          await persistState()
+          zainLighthouseOutcome = await scanSite(zainIndex, 'lighthouse')
+          if (zainLighthouseOutcome.success) {
+            const updatedDelivery = await deliverPhaseReport([...state.sites], 'updated', new Date().toISOString())
+            finalEmailStatus = { ...updatedDelivery, initialStatus: firstDelivery.status, zainPageSpeed: 'failed', zainUpdate: updatedDelivery.status }
+          } else {
+            finalEmailStatus = { ...firstDelivery, zainPageSpeed: 'failed', zainUpdate: 'not-sent', zainError: zainLighthouseOutcome.message }
+          }
+        }
+        state.historyEmailStatus = await deliverSundayHistoryReport(completedAt)
+        const finalZainFailure = zainPageSpeedOutcome.success || zainLighthouseOutcome?.success
+          ? []
+          : [zainLighthouseOutcome || zainPageSpeedOutcome]
+        const allFailures = [...primaryFailures, ...finalZainFailure]
+        state = {
+          ...state,
+          status: 'completed',
+          phase: 'completed',
+          issues: stagedIssues,
+          lastCompletedAt: completedAt,
+          durationSeconds: Math.round((Date.now() - startedAt) / 1000),
+          error: null,
+          warning: allFailures.length
+            ? allFailures.map(failure => `${failure.domain}: unavailable for this run; available scores were retained.`).join(' | ')
+            : null,
+          emailStatus: finalEmailStatus
         }
         await persistState()
       } catch (error) {
-        state = { ...state, status: 'failed', error: cleanText(error.message), emailStatus: { status: 'blocked', message: 'Email not sent because the complete score matrix was not available.' } }
+        state = { ...state, status: 'failed', phase: 'failed', error: cleanText(error.message), emailStatus: { status: 'failed', message: 'The automated two-phase reporting process did not complete.' } }
         await persistState()
       } finally { running = null }
       return state
@@ -1505,7 +1673,7 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
         reportTime: settings.time,
         nextRunAt: state.nextRunAt,
         nextSundayHistoryEmailAt: state.nextHistoryEmailAt,
-        sundayHistoryWorkingDays: settings.historyWorkingDays,
+        sundayHistoryDays: settings.historyWorkingDays,
         historyCount: state.history?.length || 0,
         error: initializationError
       }))
@@ -1686,6 +1854,9 @@ export default defineConfig(({ mode }) => {
     publicAppUrl: env.PUBLIC_APP_URL || process.env.PUBLIC_APP_URL
   }
   return {
+    server: {
+      watch: { ignored: ['**/work/lighthouse-profiles/**'] }
+    },
     preview: {
       allowedHosts: ['bench.stcdigitalhub.com']
     },

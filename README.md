@@ -8,9 +8,11 @@ STC-branded React dashboard for comparing Mobile and Web Google PageSpeed scores
 - Mobile and Web Performance, Accessibility, Best Practices, and SEO scores
 - One complete multi-site score check with strict completeness validation
 - Daily scheduled run at 10:00 AM Asia/Kuwait
-- Sunday email bundle with the completed benchmark and previous 15 Sunday–Thursday working days of score history
+- Separate Sunday score-history email covering the previous 15 calendar days
+- Exact ordered automation: STC Kuwait, Ooredoo Kuwait, STC Saudi, STC Bahrain, Virgin, then Zain Kuwait
+- The first five sites use Google PageSpeed Insights only; Zain runs last and receives one Lighthouse retry only when PageSpeed fails
 - Saved email recipients and clean three-site-section HTML reports
-- Email delivery only after every required score is available
+- Daily email delivery to every selected recipient even when one or more website tests fail
 - Excel-compatible CSV and printable PDF exports
 - Secure login, STC access requests, Admin approval, and role-based permissions
 

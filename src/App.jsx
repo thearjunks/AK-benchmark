@@ -1257,10 +1257,10 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
     () => localStorage.getItem("benchmark-history-email-to") || "",
   );
   const [emailEnabled, setEmailEnabled] = useState(
-    () => localStorage.getItem("benchmark-email-enabled") === "true",
+    () => localStorage.getItem("benchmark-email-enabled") !== "false",
   );
   const [autoSendAfterCheck, setAutoSendAfterCheck] = useState(
-    () => localStorage.getItem("benchmark-auto-send-after-check") === "true",
+    () => localStorage.getItem("benchmark-auto-send-after-check") !== "false",
   );
   const [emailStatus, setEmailStatus] = useState({
     configured: false,
@@ -2309,9 +2309,9 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
                   <span>Automated standard monitoring</span>
                   <h1>Six websites. One complete score check.</h1>
                   <p>
-                    Each run resets scores to zero, then fills verified
-                    PageSpeed values with a GitHub Lighthouse fallback for
-                    blocked sites.
+                    Websites run in the displayed order using Google PageSpeed
+                    Insights. Zain runs last and receives one Lighthouse retry
+                    only when its PageSpeed test fails.
                   </p>
                 </div>
                 <div className="automation-actions">
@@ -2373,11 +2373,15 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
                   {individualActiveUrl
                     ? `Rechecking ${new URL(individualActiveUrl).hostname.replace(/^www\./, "")}. Only this website is reset; the other scores remain available.`
                     : automation.status === "running"
-                      ? `Scores started at zero and are updating as each website completes. ${autoSendAfterCheck ? "The report will be emailed after all six are complete." : "The completed report will be held for manual review."}`
+                      ? automation.phase === "zain-lighthouse-retry"
+                        ? "The first report was processed without Zain. Zain is receiving its single Lighthouse retry; an updated email will be sent only if it succeeds."
+                        : automation.phase === "initial-report"
+                          ? "Zain failed in PageSpeed and the first report is being sent without Zain data."
+                          : `Scores started at zero and all six websites are being checked in order with Zain last. ${autoSendAfterCheck ? "The daily report will be emailed to all saved recipients even when a website fails." : "The completed manual report will be held for review."}`
                       : automation.status === "failed"
-                        ? `${automation.error || "The latest complete check failed."} Completed websites remain updated, unfinished websites stay at zero, and email was not sent.`
+                        ? `${automation.error || "The automated process failed unexpectedly."} Review the saved stage details and email status.`
                         : automation.lastCompletedAt
-                          ? `Last complete run: ${checkedTime(automation.lastCompletedAt)} · Email ${automation.emailStatus?.status || "not sent"}${automation.emailStatus?.message ? ` — ${automation.emailStatus.message}` : ""}`
+                          ? `${automation.warning ? `${automation.warning} ` : ""}Last completed run: ${checkedTime(automation.lastCompletedAt)} · Email ${automation.emailStatus?.status || "not sent"}${automation.emailStatus?.message ? ` — ${automation.emailStatus.message}` : ""}`
                           : "Ready for the first complete six-site score check."}
                 </span>
               </div>
@@ -3144,7 +3148,7 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
                   <h2>Report recipient and schedule</h2>
                   <p>
                     Select a report for manual sending. Sunday delivery combines
-                    the completed benchmark with 15 prior working days of history.
+                    the daily benchmark plus a separate report for the previous 15 calendar days.
                   </p>
                 </div>
                 {!permissions.canSendEmail && (
@@ -3299,7 +3303,7 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
                     <span>History schedule</span>
                     <div>
                       <History size={16} />
-                      <strong>Every Sunday · previous 15 working days</strong>
+                      <strong>Every Sunday · previous 15 calendar days</strong>
                     </div>
                   </label>
                   <label>
