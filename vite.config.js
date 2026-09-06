@@ -48,6 +48,15 @@ export function automatedEmailPhases({ zainPageSpeedSucceeded, zainLighthouseSuc
   return zainLighthouseSucceeded ? ['initial', 'updated'] : ['initial']
 }
 
+export function shouldQueueScheduledRun(trigger, busy) {
+  return trigger === 'scheduled' && busy
+}
+
+export function shouldSendSundayHistory(trigger, now, previousStatus) {
+  const dateKey = historyDateKey(now)
+  return ['scheduled', 'manual'].includes(trigger) && isKuwaitSunday(now) && previousStatus?.dateKey !== dateKey
+}
+
 export function automationAuditPlan(zainPageSpeedSucceeded = false) {
   const pageSpeedChecks = STANDARD_URLS.map(url => ({
     domain: new URL(url).hostname.replace(/^www\./, ''),
@@ -1185,6 +1194,7 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
   let timer = null
   let running = null
   let individualRunning = null
+  let queuedScheduledRun = false
   let state = {
     status: 'idle', standardUrls: STANDARD_URLS, sites: [], issues: [], progress: [], history: [],
     lastAttemptAt: null, lastCompletedAt: null, nextRunAt: nextKuwaitRun('10:00'),
@@ -1346,7 +1356,16 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
   }
 
   async function runAutomation(trigger) {
-    if (running || individualRunning) return running || individualRunning
+    if (running || individualRunning) {
+      const activeRun = running || individualRunning
+      if (!shouldQueueScheduledRun(trigger, true)) return activeRun
+      queuedScheduledRun = true
+      return activeRun.then(() => {
+        if (!queuedScheduledRun) return state
+        queuedScheduledRun = false
+        return runAutomation('scheduled')
+      })
+    }
     running = (async () => {
       const stagedIssues = []
       const primaryFailures = []
@@ -1461,14 +1480,14 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
       }
 
       const deliverSundayHistoryReport = async sentAt => {
-        if (trigger !== 'scheduled' || !settings.weeklyHistoryEnabled || !isKuwaitSunday(sentAt)) return null
+        if (!settings.weeklyHistoryEnabled || !shouldSendSundayHistory(trigger, sentAt, state.historyEmailStatus)) return null
         if (!recipients.length || !transporter) return { status: 'skipped', message: recipients.length ? 'Gmail is not configured.' : 'No saved recipients.' }
         try {
           await transporter.verify()
           const selectedHistory = filterPreviousKuwaitDays(state.history || [], sentAt, 15)
           await sendSundayHistoryEmail(transporter, emailConfig, recipients, state.history || [], sentAt)
           return {
-            status: 'sent', trigger: 'weekly-sunday', sentAt: new Date().toISOString(),
+            status: 'sent', trigger: 'weekly-sunday', sentAt: new Date().toISOString(), dateKey: historyDateKey(sentAt),
             recipients: recipients.length, records: selectedHistory.length, calendarDays: 15
           }
         } catch (error) {
@@ -1483,17 +1502,17 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
         }
 
         const zainPageSpeedOutcome = await scanSite(zainIndex, 'pagespeed')
-        const completedAt = new Date().toISOString()
+        const pageSpeedCompletedAt = new Date().toISOString()
         let zainLighthouseOutcome = null
         let firstDelivery
         let finalEmailStatus
         if (zainPageSpeedOutcome.success) {
-          firstDelivery = await deliverPhaseReport([...state.sites], 'daily', completedAt)
+          firstDelivery = await deliverPhaseReport([...state.sites], 'daily', pageSpeedCompletedAt)
           finalEmailStatus = { ...firstDelivery, zainPageSpeed: 'complete', zainUpdate: 'not-required' }
         } else {
           state.phase = 'initial-report'
           await persistState()
-          firstDelivery = await deliverPhaseReport(state.sites.filter((_, index) => index !== zainIndex), 'initial', completedAt)
+          firstDelivery = await deliverPhaseReport(state.sites.filter((_, index) => index !== zainIndex), 'initial', pageSpeedCompletedAt)
           state.emailStatus = { ...firstDelivery, zainPageSpeed: 'failed', zainUpdate: 'pending' }
           state.phase = 'zain-lighthouse-retry'
           await persistState()
@@ -1505,6 +1524,7 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
             finalEmailStatus = { ...firstDelivery, zainPageSpeed: 'failed', zainUpdate: 'not-sent', zainError: zainLighthouseOutcome.message }
           }
         }
+        const completedAt = new Date().toISOString()
         state.historyEmailStatus = await deliverSundayHistoryReport(completedAt)
         const finalZainFailure = zainPageSpeedOutcome.success || zainLighthouseOutcome?.success
           ? []

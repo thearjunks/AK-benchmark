@@ -4,12 +4,17 @@ import {
   filterPreviousKuwaitDays,
   isKuwaitSunday,
   nextSundayHistoryRun,
-  previousKuwaitDateKeys
+  previousKuwaitDateKeys,
+  shouldSendSundayHistory
 } from '../vite.config.js'
 
 const monday = '2026-09-07T07:20:00.000Z'
 assert.equal(isKuwaitSunday(monday), false)
 assert.equal(isKuwaitSunday('2026-09-06T07:20:00.000Z'), true)
+assert.equal(shouldSendSundayHistory('scheduled', '2026-09-06T07:20:00.000Z', null), true)
+assert.equal(shouldSendSundayHistory('manual', '2026-09-06T07:20:00.000Z', null), true)
+assert.equal(shouldSendSundayHistory('recovery', '2026-09-06T07:20:00.000Z', null), false)
+assert.equal(shouldSendSundayHistory('scheduled', '2026-09-06T07:20:00.000Z', { dateKey: '2026-09-06' }), false)
 assert.deepEqual(previousKuwaitDateKeys(monday, 15), [
   '2026-08-23', '2026-08-24', '2026-08-25', '2026-08-26', '2026-08-27',
   '2026-08-28', '2026-08-29', '2026-08-30', '2026-08-31', '2026-09-01',

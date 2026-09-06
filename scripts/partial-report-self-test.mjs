@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { automatedEmailPhases, automationAuditPhases, automationAuditPlan, automationTimingPolicy, buildMatrixEmail, classifyBatchFailures, historyRecordsForSite } from '../vite.config.js'
+import { automatedEmailPhases, automationAuditPhases, automationAuditPlan, automationTimingPolicy, buildMatrixEmail, classifyBatchFailures, historyRecordsForSite, shouldQueueScheduledRun } from '../vite.config.js'
 
 const phases = automationAuditPhases()
 assert.deepEqual(phases.primaryIndices, [0, 1, 2, 3, 4])
@@ -16,6 +16,9 @@ assert.deepEqual(automationAuditPlan(false).at(-1), { domain: 'kw.zain.com', pro
 assert.deepEqual(automatedEmailPhases({ zainPageSpeedSucceeded: true }), ['daily'])
 assert.deepEqual(automatedEmailPhases({ zainPageSpeedSucceeded: false, zainLighthouseSucceeded: false }), ['initial'])
 assert.deepEqual(automatedEmailPhases({ zainPageSpeedSucceeded: false, zainLighthouseSucceeded: true }), ['initial', 'updated'])
+assert.equal(shouldQueueScheduledRun('scheduled', true), true)
+assert.equal(shouldQueueScheduledRun('manual', true), false)
+assert.equal(shouldQueueScheduledRun('scheduled', false), false)
 const timing = automationTimingPolicy()
 assert.equal(timing.batchBudgetMs, 18 * 60 * 1000)
 assert.equal(timing.primaryConcurrency, 1)
