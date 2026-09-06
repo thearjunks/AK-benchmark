@@ -21,6 +21,11 @@ const server = await preview({
   }
 })
 
+// Identify this runtime release during post-deployment health verification.
+server.httpServer?.prependListener('request', (_req, res) => {
+  res.setHeader('X-Benchmark-Release', 'audit-recovery-2026-09-06')
+})
+
 server.httpServer?.once('listening', () => {
   console.log(`AK Website Benchmark listening on port ${port}`)
 })
