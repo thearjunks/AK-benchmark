@@ -1690,6 +1690,8 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
         lighthouseWorkerConfigured: workerConfigured,
         crossSourceDeviceMerge: true,
         schedulerEnabled: true, persistence: initialized ? 'writable' : 'pending',
+        reportingScheduleVersion: settings.reportingScheduleVersion,
+        scheduledOverlapPolicy: 'queue',
         reportTime: settings.time,
         nextRunAt: state.nextRunAt,
         nextSundayHistoryEmailAt: state.nextHistoryEmailAt,
