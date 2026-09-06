@@ -3,6 +3,7 @@ import { createHmac } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 import { Worker } from 'node:worker_threads'
 import { launch } from 'chrome-launcher'
+import { mkdir, writeFile } from 'node:fs/promises'
 
 const CATEGORIES = ['performance', 'accessibility', 'best-practices', 'seo']
 const SEVERITY_RANK = { Critical: 0, High: 1, Medium: 2, Low: 3 }
@@ -111,8 +112,14 @@ async function audit(url, strategy, attempts = 2) {
 async function postCallback(callbackUrl, token, payload) {
   const body = JSON.stringify(payload)
   const signature = `sha256=${createHmac('sha256', token).update(body).digest('hex')}`
-  const response = await fetch(callbackUrl, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Benchmark-Signature': signature }, body })
-  if (!response.ok) throw new Error(`Callback returned HTTP ${response.status}.`)
+  await mkdir('work', { recursive: true })
+  await writeFile('work/lighthouse-result.json', JSON.stringify({ body, signature }))
+  try {
+    const response = await fetch(callbackUrl, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Benchmark-Signature': signature }, body, signal: AbortSignal.timeout(15000) })
+    if (!response.ok) throw new Error(`Callback returned HTTP ${response.status}.`)
+  } catch (error) {
+    console.warn(`Direct result delivery failed: ${error.message}. Signed artifact is available for server retrieval.`)
+  }
 }
 
 async function main() {
@@ -139,7 +146,7 @@ async function main() {
     const errors = {}
     await Promise.all(['mobile', 'desktop'].map(async strategy => {
       try { devices[strategy] = await audit(url, strategy) }
-      catch (error) { errors[strategy] = String(error.message || `${strategy} Lighthouse failed.`).replace(/\s+/g, ' ').trim() }
+      catch (error) { errors[strategy] = String(error.message || `${strategy} Lighthouse failed.`).replace(/\s+/g, ' ').trim(); console.error(`${strategy}: ${errors[strategy]}`) }
     }))
     const ok = Object.keys(devices).length > 0
     payload = {

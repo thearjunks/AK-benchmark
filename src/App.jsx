@@ -168,6 +168,7 @@ function historyDateLabel(dateKey) {
 }
 
 function deviceScore(site, device, metric) {
+  if (site.coverage?.[device] === false && !site.pending) return null;
   const exact = site.deviceScores?.[device]?.[metric];
   if (typeof exact === "number") return exact;
   if (metric === "performance")

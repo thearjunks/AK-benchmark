@@ -37,3 +37,11 @@ jobs:
           WORKER_URL: ${{ inputs.url }}
           WORKER_CALLBACK_URL: ${{ inputs.callback_url }}
           LIGHTHOUSE_CALLBACK_TOKEN: ${{ secrets.LIGHTHOUSE_CALLBACK_TOKEN }}
+      - name: Preserve signed audit result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighthouse-${{ inputs.request_id }}
+          path: work/lighthouse-result.json
+          retention-days: 1
+          if-no-files-found: warn

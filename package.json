@@ -30,6 +30,7 @@
     "pptxgenjs": "^4.0.1",
     "react": "latest",
     "react-dom": "latest",
+    "unzipper": "^0.10.14",
     "vite": "latest"
   },
   "overrides": {

@@ -7,6 +7,10 @@ import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 import path from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { orderWebsites } from './website-order.mjs'
+import { fetchWorkerArtifact } from './worker-artifact.mjs'
+import { setDefaultAutoSelectFamilyAttemptTimeout } from 'node:net'
+
+if (process.platform === 'win32') setDefaultAutoSelectFamilyAttemptTimeout(1500)
 import { authPlugin } from './auth.mjs'
 import { parseLegacyDesktopHistory, parseLegacyMobileHistory } from './legacy-history.mjs'
 
@@ -23,7 +27,7 @@ const STANDARD_URLS = [
 const DEVICE_METRICS = ['performance', 'accessibility', 'bestPractices', 'seo']
 const PAGE_SPEED_TIMEOUT_MS = 90_000
 const LIGHTHOUSE_TIMEOUT_MS = 120_000
-const AUTOMATION_BUDGET_MS = 18 * 60 * 1000
+const AUTOMATION_BUDGET_MS = 20 * 60 * 1000
 const PRIMARY_SCAN_CONCURRENCY = 2
 
 export function classifyBatchFailures(failures = []) {
@@ -1284,15 +1288,17 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
     return supplied.length === expected.length && timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))
   }
 
-  async function runGitHubLighthouse(url, timeoutMs = 7 * 60 * 1000) {
+  async function runGitHubLighthouse(url, timeoutMs = 9 * 60 * 1000) {
     if (!workerConfigured) throw new Error('GitHub Lighthouse worker is not configured.')
     const requestId = randomUUID()
     let resolveRun
     let rejectRun
     const result = new Promise((resolve, reject) => { resolveRun = resolve; rejectRun = reject })
+    result.catch(() => {}) // Dispatch and artifact retrieval may still be in flight at the deadline.
+    let lastDeliveryError = ''
     const timer = setTimeout(() => {
       pendingWorkerRuns.delete(requestId)
-      rejectRun(new Error(`GitHub Lighthouse worker timed out after ${Math.ceil(timeoutMs / 60_000)} minutes.`))
+      rejectRun(new Error(`GitHub Lighthouse worker timed out after ${Math.ceil(timeoutMs / 60_000)} minutes.${lastDeliveryError ? ` ${lastDeliveryError}` : ''}`))
     }, timeoutMs)
     pendingWorkerRuns.set(requestId, { url: new URL(url).href, resolve: resolveRun, reject: rejectRun, timer })
 
@@ -1310,7 +1316,8 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
         body: JSON.stringify({
           ref: deploymentConfig.lighthouseWorkerRef || 'main',
           inputs: { request_id: requestId, url: new URL(url).href, callback_url: callbackUrl }
-        })
+        }),
+        signal: AbortSignal.timeout(15000)
       })
     } catch (error) {
       clearTimeout(timer)
@@ -1322,7 +1329,23 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
       pendingWorkerRuns.delete(requestId)
       throw new Error(`GitHub Lighthouse worker dispatch failed with HTTP ${response.status}.`)
     }
-    return workerPayloadToAnalysis(await result, url)
+    const poll = async () => {
+      while (pendingWorkerRuns.has(requestId)) {
+        await new Promise(resolve => setTimeout(resolve, 15000))
+        if (!pendingWorkerRuns.has(requestId)) return
+        try {
+          const payload = await fetchWorkerArtifact({ repository: workerRepository, githubToken: deploymentConfig.githubActionsToken, callbackToken: deploymentConfig.lighthouseCallbackToken, requestId, url })
+          if (!payload || !pendingWorkerRuns.has(requestId)) continue
+          clearTimeout(timer)
+          pendingWorkerRuns.delete(requestId)
+          if (payload.ok) resolveRun(payload)
+          else rejectRun(new Error(cleanText(payload.error || 'Lighthouse could not capture either device.')))
+        } catch (error) { lastDeliveryError = cleanText(error.message) }
+      }
+    }
+    poll().catch(error => { lastDeliveryError = cleanText(error.message) })
+    try { return workerPayloadToAnalysis(await result, url) }
+    finally { clearTimeout(timer); pendingWorkerRuns.delete(requestId) }
   }
 
   async function deliverHistoryReport(recipients, trigger, selectedHistory = state.history) {
@@ -1458,22 +1481,23 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
           }
           await persistState()
           try {
-            const remainingMs = deadlineAt - Date.now()
-            if (remainingMs <= 0) throw new Error('The 18-minute automation time limit was reached.')
+            const auditDeadline = index === zainIndex ? deadlineAt : deadlineAt - 7 * 60 * 1000
+            const remainingMs = auditDeadline - Date.now()
+            if (remainingMs <= 0) throw new Error(index === zainIndex ? 'The 20-minute automation time limit was reached.' : 'Primary audit time limit reached; remaining time is reserved for Zain.')
             let budgetTimer
             const missingDevices = ['mobile', 'desktop'].filter(device => !hasCompleteDeviceScores(partialResult?.site, device))
             const candidate = await Promise.race([
               provider.startsWith('lighthouse') && workerConfigured
-                ? runGitHubLighthouse(url, Math.min(7 * 60 * 1000, remainingMs))
+                ? runGitHubLighthouse(url, Math.min(9 * 60 * 1000, remainingMs))
                 : analyzeWebsite(url, apiKey, deploymentConfig.lighthouseFallbackMode, provider, missingDevices),
-              new Promise((_, reject) => { budgetTimer = setTimeout(() => reject(new Error('The 18-minute automation time limit was reached.')), remainingMs) })
+              new Promise((_, reject) => { budgetTimer = setTimeout(() => reject(new Error(index === zainIndex ? 'The 20-minute automation time limit was reached.' : 'Primary audit time limit reached; remaining time is reserved for Zain.')), remainingMs) })
             ]).finally(() => clearTimeout(budgetTimer))
             partialResult = mergeAuditAnalyses(partialResult, candidate, url)
             if (hasCompleteScoreMatrix(partialResult.site)) {
               result = partialResult
               break
             }
-            lastError = new Error('Mobile or Web score columns are incomplete.')
+            lastError = new Error(partialResult.site.scanWarning || 'Mobile or Web score columns are incomplete.')
           } catch (error) { lastError = error }
         }
         if (result) {
@@ -1584,7 +1608,7 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
         )
         const recoveryByIndex = new Map(recoveryOutcomes.map(outcome => [outcome.index, outcome]))
         const afterPageSpeedRecovery = afterFallback.map(outcome => recoveryByIndex.get(outcome.index) || outcome)
-        const finalFallbackIndices = afterPageSpeedRecovery.filter(outcome => !outcome.success).map(outcome => outcome.index)
+        const finalFallbackIndices = afterPageSpeedRecovery.filter(outcome => !outcome.success && !workerConfigured && Date.now() < deadlineAt - 7 * 60 * 1000).map(outcome => outcome.index)
         if (finalFallbackIndices.length) {
           state.phase = 'primary-lighthouse-recovery'
           await persistState()
@@ -1864,7 +1888,14 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
         res.statusCode = 409
         return res.end(JSON.stringify({ error: 'Another score check is already running.' }))
       }
-      const canSendEmail = req.benchmarkUser?.role === 'admin' || req.benchmarkPermissions?.canSendEmail === true
+      let body = ''
+      for await (const chunk of req) {
+        body += chunk
+        if (body.length > 2048) { res.statusCode = 413; return res.end(JSON.stringify({ error: 'Request is too large.' })) }
+      }
+      let options
+      try { options = JSON.parse(body || '{}') } catch { res.statusCode = 400; return res.end(JSON.stringify({ error: 'Invalid score check options.' })) }
+      const canSendEmail = options.sendEmail !== false && (req.benchmarkUser?.role === 'admin' || req.benchmarkPermissions?.canSendEmail === true)
       runAutomation(canSendEmail ? 'manual' : 'manual-no-email').catch(() => {})
       res.statusCode = 202
       return res.end(JSON.stringify({ started: true }))
