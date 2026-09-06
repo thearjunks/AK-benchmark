@@ -1303,7 +1303,9 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
     }, timeoutMs)
     pendingWorkerRuns.set(requestId, { url: new URL(url).href, resolve: resolveRun, reject: rejectRun, timer })
 
-    const callbackUrl = new URL('/api/lighthouse-worker/callback', deploymentConfig.publicAppUrl).href
+    // Local runs retrieve authenticated artifacts; the worker only accepts the
+    // production callback origin, never a workstation's localhost address.
+    const callbackUrl = new URL('/api/lighthouse-worker/callback', deploymentConfig.localGithubFallback ? 'https://bench.stcdigitalhub.com' : deploymentConfig.publicAppUrl).href
     let response
     try {
       response = await fetch(`https://api.github.com/repos/${workerRepository}/actions/workflows/lighthouse-worker.yml/dispatches`, {
