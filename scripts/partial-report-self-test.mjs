@@ -2,17 +2,17 @@ import assert from 'node:assert/strict'
 import { automatedEmailPhases, automationAuditPhases, automationAuditPlan, automationTimingPolicy, buildMatrixEmail, classifyBatchFailures, historyRecordsForSite, shouldQueueScheduledRun } from '../vite.config.js'
 
 const phases = automationAuditPhases()
-assert.deepEqual(phases.primaryIndices, [0, 1, 2, 3, 4])
+assert.deepEqual(phases.primaryIndices, [0, 2, 3, 4, 1])
 assert.equal(phases.zainIndex, 5)
 assert.deepEqual(automationAuditPlan(true), [
-  { domain: 'stc.com.kw', provider: 'pagespeed' },
-  { domain: 'ooredoo.com.kw', provider: 'pagespeed' },
-  { domain: 'stc.com.sa', provider: 'pagespeed' },
-  { domain: 'stc.com.bh', provider: 'pagespeed' },
-  { domain: 'virgin.com', provider: 'pagespeed' },
-  { domain: 'kw.zain.com', provider: 'pagespeed' }
+  { domain: 'stc.com.kw', provider: 'pagespeed', fallback: 'lighthouse' },
+  { domain: 'ooredoo.com.kw', provider: 'pagespeed', fallback: 'lighthouse' },
+  { domain: 'stc.com.sa', provider: 'pagespeed', fallback: 'lighthouse' },
+  { domain: 'stc.com.bh', provider: 'pagespeed', fallback: 'lighthouse' },
+  { domain: 'virgin.com', provider: 'pagespeed', fallback: 'lighthouse' },
+  { domain: 'kw.zain.com', provider: 'pagespeed', fallback: 'lighthouse' }
 ])
-assert.deepEqual(automationAuditPlan(false).at(-1), { domain: 'kw.zain.com', provider: 'lighthouse' })
+assert.deepEqual(automationAuditPlan(false).at(-1), { domain: 'kw.zain.com', provider: 'pagespeed', fallback: 'lighthouse' })
 assert.deepEqual(automatedEmailPhases({ zainPageSpeedSucceeded: true }), ['daily'])
 assert.deepEqual(automatedEmailPhases({ zainPageSpeedSucceeded: false, zainLighthouseSucceeded: false }), ['initial'])
 assert.deepEqual(automatedEmailPhases({ zainPageSpeedSucceeded: false, zainLighthouseSucceeded: true }), ['initial', 'updated'])
@@ -21,11 +21,11 @@ assert.equal(shouldQueueScheduledRun('manual', true), false)
 assert.equal(shouldQueueScheduledRun('scheduled', false), false)
 const timing = automationTimingPolicy()
 assert.equal(timing.batchBudgetMs, 18 * 60 * 1000)
-assert.equal(timing.primaryConcurrency, 1)
+assert.equal(timing.primaryConcurrency, 2)
 assert.equal(timing.providerAttempts, 1)
 assert.equal(timing.siteAttempts, 1)
-assert.ok(timing.pageSpeedTimeoutMs <= 75_000)
-assert.ok(timing.lighthouseTimeoutMs <= 90_000)
+assert.ok(timing.pageSpeedTimeoutMs <= 90_000)
+assert.ok(timing.lighthouseTimeoutMs <= 120_000)
 
 const zainOnly = classifyBatchFailures([{ domain: 'kw.zain.com', message: 'audit unavailable' }])
 assert.equal(zainOnly.canSend, true)

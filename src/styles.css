@@ -243,3 +243,36 @@ footer { color:var(--stc-gray); }.toast { background:var(--stc-purple);color:var
 @media(max-width:1100px){.ppt-filter-bar{grid-template-columns:repeat(2,1fr)}.ppt-period-summary{grid-column:1/-1}.ppt-kpis{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:700px){.ppt-report-hero{align-items:flex-start;flex-direction:column}.ppt-report-hero button{width:100%;justify-content:center}.ppt-filter-bar{grid-template-columns:1fr}.ppt-period-summary{grid-column:auto}.ppt-snapshot header,.ppt-comparison header{align-items:flex-start;flex-direction:column}.ppt-chart-shell{overflow-x:auto}.ppt-trend-svg{min-width:680px}.ppt-kpis{grid-template-columns:1fr 1fr}.ppt-comparison-chart article{grid-template-columns:1fr}.ppt-comparison-chart article>div{grid-template-columns:1fr}.ppt-comparison-chart article span{height:28px}}
 .ppt-kpis article.change strong{font-size:18px;white-space:nowrap}
+
+/* Email workspace: delivery summary, composer, then a full-width report preview. */
+.email-screen .email-hero{border-top:4px solid #4f008c;padding:26px;gap:18px}
+.email-screen .email-hero h1{font-size:28px;margin:7px 0}
+.email-screen .email-hero p{font-size:13px;line-height:1.6}
+.email-delivery-overview{display:grid;grid-template-columns:1fr 1fr 2fr;gap:14px;margin:18px 0}
+.email-delivery-overview>div{display:flex;align-items:center;gap:14px;padding:20px;background:#fff;border:1px solid #e6e0ec;border-radius:14px;color:#4f008c}
+.email-delivery-overview span{display:grid;gap:6px;font-size:12px;color:#73707d}
+.email-delivery-overview strong{font-size:16px;color:#272132}
+.email-screen .email-layout{grid-template-columns:minmax(0,1fr);gap:20px}
+.email-screen .email-setup-card{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:22px 32px;padding:28px}
+.email-screen .email-card-head,.email-screen .permission-notice,.email-screen .email-buttons{grid-column:1/-1}
+.email-screen .email-card-head h2{font-size:21px;margin:7px 0}
+.email-screen .email-card-head p{font-size:12px;line-height:1.6}
+.email-screen .recipient-manager{min-width:0;margin:0}
+.email-screen .schedule-settings{margin:0;padding:20px;background:#faf8fc;border:1px solid #eee7f4;border-radius:12px}
+.manual-recipient-modes{display:flex;padding:5px;border-radius:10px;background:#f3eef8;margin-bottom:22px;gap:5px}
+.manual-recipient-modes button{flex:1;padding:12px;border:0;border-radius:7px;background:transparent;color:#64566f;font-weight:700;cursor:pointer}
+.manual-recipient-modes button[aria-pressed=true]{background:#4f008c;color:white;box-shadow:0 2px 6px #4f008c22}
+.email-screen .saved-recipients{max-height:320px;overflow:auto;margin-top:16px}
+.email-screen .recipient-row{display:flex;gap:12px;padding:13px 10px}
+.recipient-choice{display:flex;align-items:center;gap:12px;flex:1;min-width:0;cursor:pointer}
+.email-screen .recipient-choice input{width:18px;height:18px;flex:0 0 18px;accent-color:#4f008c}
+.recipient-choice span{overflow-wrap:anywhere;font-size:13px}
+.recipient-help{font-size:12px;line-height:1.6;color:#716579}
+.email-screen .email-buttons{display:flex;align-items:center;gap:12px;border-top:1px solid #eee7f4;padding-top:20px;margin:0}
+.email-screen .email-buttons button{width:auto;min-width:170px;padding:0 20px}
+.manual-send-summary{flex:1;font-size:13px;color:#716579}
+.manual-send-summary strong{color:#4f008c}
+.email-screen .email-preview-card{min-width:0;padding:26px;overflow:hidden}
+.email-screen button:disabled{opacity:.5;cursor:not-allowed}
+.email-screen button:focus-visible,.email-screen input:focus-visible{outline:3px solid #a879d4;outline-offset:3px}
+@media(max-width:800px){.email-delivery-overview{grid-template-columns:1fr 1fr}.email-delivery-overview>div:last-child{grid-column:1/-1}.email-screen .email-setup-card{grid-template-columns:1fr;padding:18px}.email-screen .email-buttons{flex-wrap:wrap}.manual-send-summary{flex-basis:100%}.email-screen .email-buttons button{flex:1}.email-screen .email-hero{grid-template-columns:44px 1fr}.email-screen .email-connection{grid-column:1/-1}.email-screen .email-preview-card{padding:16px}}

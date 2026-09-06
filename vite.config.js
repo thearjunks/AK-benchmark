@@ -5,6 +5,8 @@ import ExcelJS from 'exceljs'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 import path from 'node:path'
+import { Worker } from 'node:worker_threads'
+import { orderWebsites } from './website-order.mjs'
 import { authPlugin } from './auth.mjs'
 import { parseLegacyDesktopHistory, parseLegacyMobileHistory } from './legacy-history.mjs'
 
@@ -19,10 +21,10 @@ const STANDARD_URLS = [
   'https://www.kw.zain.com/en/shop'
 ]
 const DEVICE_METRICS = ['performance', 'accessibility', 'bestPractices', 'seo']
-const PAGE_SPEED_TIMEOUT_MS = 75_000
-const LIGHTHOUSE_TIMEOUT_MS = 90_000
+const PAGE_SPEED_TIMEOUT_MS = 90_000
+const LIGHTHOUSE_TIMEOUT_MS = 120_000
 const AUTOMATION_BUDGET_MS = 18 * 60 * 1000
-const PRIMARY_SCAN_CONCURRENCY = 1
+const PRIMARY_SCAN_CONCURRENCY = 2
 
 export function classifyBatchFailures(failures = []) {
   return { tolerated: [...failures], blocking: [], canSend: true }
@@ -38,7 +40,8 @@ export function standardUrlIndex(value) {
 export function automationAuditPhases(urls = STANDARD_URLS) {
   const zainIndex = urls.findIndex(url => new URL(url).hostname.replace(/^www\./, '') === 'kw.zain.com')
   return {
-    primaryIndices: urls.map((_, index) => index).filter(index => index !== zainIndex),
+    primaryIndices: urls.map((_, index) => index).filter(index => index !== zainIndex)
+      .sort((a, b) => Number(new URL(urls[a]).hostname.includes('ooredoo.com.kw')) - Number(new URL(urls[b]).hostname.includes('ooredoo.com.kw'))),
     zainIndex
   }
 }
@@ -60,11 +63,10 @@ export function shouldSendSundayHistory(trigger, now, previousStatus) {
 export function automationAuditPlan(zainPageSpeedSucceeded = false) {
   const pageSpeedChecks = STANDARD_URLS.map(url => ({
     domain: new URL(url).hostname.replace(/^www\./, ''),
-    provider: 'pagespeed'
+    provider: 'pagespeed',
+    fallback: 'lighthouse'
   }))
-  return zainPageSpeedSucceeded
-    ? pageSpeedChecks
-    : [...pageSpeedChecks, { domain: 'kw.zain.com', provider: 'lighthouse' }]
+  return zainPageSpeedSucceeded ? pageSpeedChecks : pageSpeedChecks
 }
 
 export function automationTimingPolicy() {
@@ -76,6 +78,20 @@ export function automationTimingPolicy() {
     providerAttempts: 1,
     siteAttempts: 1
   }
+}
+
+async function mapWithConcurrency(items, concurrency, worker) {
+  const results = new Array(items.length)
+  let nextIndex = 0
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const resultIndex = nextIndex
+      nextIndex += 1
+      results[resultIndex] = await worker(items[resultIndex], resultIndex)
+    }
+  })
+  await Promise.all(runners)
+  return results
 }
 
 function cleanText(value = '') {
@@ -200,19 +216,18 @@ async function runPageSpeedWithRetry(targetUrl, strategy, apiKey, categories, at
   throw lastError
 }
 
-async function runLighthouseFallback(targetUrl, strategy) {
-  const [{ default: lighthouse }, { launch }] = await Promise.all([
-    import('lighthouse'),
-    import('chrome-launcher')
-  ])
+async function runLighthouseFallback(targetUrl, strategy, throttlingMethod = 'simulate') {
+  const { launch } = await import('chrome-launcher')
   let chrome
+  let auditWorker
   let lighthouseTimer
   let userDataDir
   try {
     let chromePath = process.env.CHROME_PATH || undefined
     let chromeFlags = [
       '--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
-      '--ignore-certificate-errors', '--disable-extensions', '--window-size=1440,900'
+      '--ignore-certificate-errors', '--disable-extensions', '--disable-blink-features=AutomationControlled',
+      '--window-size=1440,900'
     ]
     if (!chromePath && process.platform === 'linux') {
       const { default: chromium } = await import('@sparticuz/chromium')
@@ -234,26 +249,39 @@ async function runLighthouseFallback(targetUrl, strategy) {
       handleSIGINT: false
     })
     const mobile = strategy === 'mobile'
-    const lighthouseRun = lighthouse(targetUrl, {
+    const auditOptions = {
       port: chrome.port,
       output: 'json',
       logLevel: 'silent',
       onlyCategories: CATEGORIES,
       formFactor: mobile ? 'mobile' : 'desktop',
-      throttlingMethod: 'simulate',
+      throttlingMethod,
+      maxWaitForLoad: throttlingMethod === 'devtools' ? 180_000 : 120_000,
       screenEmulation: mobile
         ? { mobile: true, width: 412, height: 823, deviceScaleFactor: 1.75, disabled: false }
         : { mobile: false, width: 1440, height: 900, deviceScaleFactor: 1, disabled: false }
+    }
+    const lighthouseRun = new Promise((resolve, reject) => {
+      auditWorker = new Worker(path.join(process.cwd(), 'scripts', 'lighthouse-audit-thread.mjs'), {
+        workerData: { url: targetUrl, options: auditOptions }, execArgv: []
+      })
+      auditWorker.once('message', message => message.error ? reject(new Error(message.error)) : resolve(message))
+      auditWorker.once('error', reject)
+      auditWorker.once('exit', code => reject(new Error(`Lighthouse worker exited before returning a result (code ${code}).`)))
     })
     const result = await Promise.race([
       lighthouseRun,
-      new Promise((_, reject) => { lighthouseTimer = setTimeout(() => reject(new Error('Direct Lighthouse audit timed out after 90 seconds.')), LIGHTHOUSE_TIMEOUT_MS) })
+      new Promise((_, reject) => {
+        const timeoutMs = throttlingMethod === 'devtools' ? 240_000 : LIGHTHOUSE_TIMEOUT_MS
+        lighthouseTimer = setTimeout(() => reject(new Error(`Direct Lighthouse ${throttlingMethod} audit timed out after ${timeoutMs / 1000} seconds.`)), timeoutMs)
+      })
     ])
     if (!result?.lhr) throw new Error('Lighthouse did not return an audit result.')
     if (result.lhr.runtimeError?.message) throw new Error(cleanText(result.lhr.runtimeError.message))
     return { lighthouseResult: result.lhr, auditSource: 'Direct Lighthouse fallback' }
   } finally {
     if (lighthouseTimer) clearTimeout(lighthouseTimer)
+    if (auditWorker) await auditWorker.terminate().catch(() => {})
     try { chrome?.kill() } catch { /* audit result must not fail because profile cleanup is delayed */ }
     if (userDataDir) {
       await new Promise(resolve => setTimeout(resolve, 500))
@@ -262,10 +290,10 @@ async function runLighthouseFallback(targetUrl, strategy) {
   }
 }
 
-async function runLighthouseWithRetry(targetUrl, strategy, attempts = 1) {
+async function runLighthouseWithRetry(targetUrl, strategy, attempts = 1, throttlingMethod = 'simulate') {
   let lastError
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try { return await runLighthouseFallback(targetUrl, strategy) }
+    try { return await runLighthouseFallback(targetUrl, strategy, throttlingMethod) }
     catch (error) {
       lastError = error
       if (attempt < attempts) await new Promise(resolve => setTimeout(resolve, attempt * 2_000))
@@ -285,8 +313,9 @@ async function runAuditByProvider(targetUrl, strategy, apiKey, provider, fallbac
     if (!hasAllAuditCategoryScores(result)) throw new Error(`${strategy} PageSpeed response did not contain all four Lighthouse category scores.`)
     return { ...result, auditSource: 'Google PageSpeed Insights' }
   }
-  if (provider === 'lighthouse') {
-    const result = await runLighthouseWithRetry(targetUrl, strategy, 1)
+  if (provider === 'lighthouse' || provider === 'lighthouse-devtools') {
+    const throttlingMethod = provider === 'lighthouse-devtools' ? 'devtools' : 'simulate'
+    const result = await runLighthouseWithRetry(targetUrl, strategy, 1, throttlingMethod)
     if (!hasAllAuditCategoryScores(result)) throw new Error(`${strategy} Lighthouse result did not contain all four category scores.`)
     return result
   }
@@ -311,15 +340,27 @@ async function runAuditWithFallback(targetUrl, strategy, apiKey, fallbackMode = 
   }
 }
 
-async function analyzeWebsite(targetUrl, apiKey, fallbackMode = 'direct', provider = 'fallback') {
+async function analyzeWebsite(targetUrl, apiKey, fallbackMode = 'direct', provider = 'fallback', requestedDevices = ['mobile', 'desktop']) {
   const target = new URL(targetUrl)
   if (!['http:', 'https:'].includes(target.protocol)) throw new Error('Only HTTP and HTTPS website URLs are supported.')
-  // Mobile and desktop form one website test and use the same selected provider.
+  const devices = requestedDevices.filter(device => ['mobile', 'desktop'].includes(device))
+  if (!devices.length) throw new Error('No device audit was requested.')
   const settle = async strategy => {
     try { return { status: 'fulfilled', value: await runAuditByProvider(target.href, strategy, apiKey, provider, fallbackMode) } }
     catch (reason) { return { status: 'rejected', reason } }
   }
-  const [mobileResult, desktopResult] = await Promise.all([settle('mobile'), settle('desktop')])
+  const settled = {}
+  if (provider.startsWith('lighthouse') && fallbackMode === 'direct') {
+    // A single local Chrome audit is materially more reliable on Windows than
+    // competing Mobile/Desktop Lighthouse processes.
+    for (const device of devices) settled[device] = await settle(device)
+  } else {
+    const results = await Promise.all(devices.map(settle))
+    devices.forEach((device, index) => { settled[device] = results[index] })
+  }
+  const notRequested = device => ({ status: 'rejected', reason: new Error(`${device} was not requested in this provider pass.`) })
+  const mobileResult = settled.mobile || notRequested('Mobile')
+  const desktopResult = settled.desktop || notRequested('Web')
   const mobile = mobileResult.status === 'fulfilled' ? mobileResult.value : null
   const desktop = desktopResult.status === 'fulfilled' ? desktopResult.value : null
   if (!mobile && !desktop) throw new Error(`Mobile: ${mobileResult.reason?.message || 'scan failed'}. Web: ${desktopResult.reason?.message || 'scan failed'}.`)
@@ -607,6 +648,7 @@ function createGmailTransporter(config) {
 }
 
 export function buildMatrixEmail(sites) {
+  sites = orderWebsites(sites)
   const emailMetrics = [['performance', 'Performance'], ['accessibility', 'Accessibility'], ['bestPractices', 'Best practices'], ['seo', 'SEO']]
   const scoreStyle = value => {
     if (typeof value !== 'number') return 'background:#f4f4f5;color:#8b9296'
@@ -677,7 +719,7 @@ export function buildHistoryEmail(history) {
   const scoreClass = value => typeof value !== 'number' ? 'missing' : value >= 90 ? 'great' : value >= 75 ? 'good' : value >= 60 ? 'warn' : 'bad'
   const domainColors = ['#ff375e', '#8736c5', '#00a1df', '#4f008c', '#c5003e', '#d71920']
   const dateKey = historyDateKey
-  const orderedDomains = STANDARD_URLS.map(url => new URL(url).hostname.replace(/^www\./, ''))
+  const orderedDomains = orderWebsites(STANDARD_URLS.map(url => new URL(url).hostname.replace(/^www\./, '')))
   const extraDomains = [...new Set(history.map(record => record.domain))].filter(domain => !orderedDomains.includes(domain))
   const domains = [...orderedDomains, ...extraDomains]
   const dates = [...new Set(history.map(record => dateKey(record.checkedAt)))].sort()
@@ -871,7 +913,15 @@ async function atomicWriteFile(file, data, encoding) {
   const temporaryFile = `${file}.${process.pid}.${randomUUID()}.tmp`
   try {
     await writeFile(temporaryFile, data, encoding)
-    await rename(temporaryFile, file)
+    try {
+      await rename(temporaryFile, file)
+    } catch (error) {
+      if (!['EPERM', 'EACCES', 'EEXIST'].includes(error.code)) throw error
+      // OneDrive can briefly lock the destination and reject an atomic rename
+      // on Windows. State writes are already serialized, so an in-place
+      // overwrite is the safe fallback and must not abort an audit run.
+      await writeFile(file, data, encoding)
+    }
   } finally {
     await rm(temporaryFile, { force: true }).catch(() => {})
   }
@@ -936,7 +986,7 @@ export async function buildHistoryWorkbook(history) {
   const purple = '4F008C'
   const coral = 'FF375E'
   const dark = '1D252D'
-  const orderedDomains = STANDARD_URLS.map(url => new URL(url).hostname.replace(/^www\./, ''))
+  const orderedDomains = orderWebsites(STANDARD_URLS.map(url => new URL(url).hostname.replace(/^www\./, '')))
   const extraDomains = [...new Set(history.map(record => record.domain))].filter(domain => !orderedDomains.includes(domain))
   const domainOrder = [...orderedDomains, ...extraDomains]
   const orderIndex = new Map(domainOrder.map((domain, index) => [domain, index]))
@@ -1392,27 +1442,30 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
       const recipients = Array.isArray(settings.recipients) ? settings.recipients.filter(Boolean) : []
       const shouldSendEmail = trigger === 'scheduled' || (trigger === 'manual' && settings.autoSendAfterCheck)
 
-      const scanSite = async (index, provider = 'pagespeed') => {
+      const scanSite = async (index, provider = 'pagespeed', seedAnalysis = null) => {
         const url = STANDARD_URLS[index]
         const domain = new URL(url).hostname.replace(/^www\./, '')
         const maxAttempts = 1
         let result = null
-        let partialResult = null
+        let partialResult = seedAnalysis
         let lastError = null
         for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
           state.progress[index] = {
             ...state.progress[index], status: 'scanning', attempt, provider,
-            message: provider === 'lighthouse' ? 'One Lighthouse retry is in progress.' : 'Google PageSpeed Insights audit in progress.'
+            message: provider.startsWith('lighthouse')
+              ? `Lighthouse ${provider === 'lighthouse-devtools' ? 'devtools recovery' : 'fallback'} is in progress.`
+              : 'Google PageSpeed Insights audit in progress.'
           }
           await persistState()
           try {
             const remainingMs = deadlineAt - Date.now()
             if (remainingMs <= 0) throw new Error('The 18-minute automation time limit was reached.')
             let budgetTimer
+            const missingDevices = ['mobile', 'desktop'].filter(device => !hasCompleteDeviceScores(partialResult?.site, device))
             const candidate = await Promise.race([
-              provider === 'lighthouse' && workerConfigured && domain === 'kw.zain.com'
+              provider.startsWith('lighthouse') && workerConfigured
                 ? runGitHubLighthouse(url, Math.min(7 * 60 * 1000, remainingMs))
-                : analyzeWebsite(url, apiKey, deploymentConfig.lighthouseFallbackMode, provider),
+                : analyzeWebsite(url, apiKey, deploymentConfig.lighthouseFallbackMode, provider, missingDevices),
               new Promise((_, reject) => { budgetTimer = setTimeout(() => reject(new Error('The 18-minute automation time limit was reached.')), remainingMs) })
             ]).finally(() => clearTimeout(budgetTimer))
             partialResult = mergeAuditAnalyses(partialResult, candidate, url)
@@ -1433,7 +1486,7 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
           state.progress[index] = { ...state.progress[index], domain, status: 'complete', overall: result.site.overall, checkedAt: result.site.scannedAt, latestSite: result.site, message: null }
           await persistState()
           await persistHistoryBackup()
-          return { success: true, domain, site: result.site }
+          return { success: true, index, domain, site: result.site, analysis: result }
         }
 
         const message = cleanText(lastError?.message || 'Score check failed.')
@@ -1459,7 +1512,7 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
         state.progress[index] = { ...state.progress[index], status: 'failed', message, latestSite: failedSite }
         await persistState()
         await persistHistoryBackup()
-        return { success: false, domain, message, site: failedSite }
+        return { success: false, index, domain, message, site: failedSite, analysis: partialResult }
       }
 
       const deliverPhaseReport = async (sites, phase, sentAt) => {
@@ -1496,11 +1549,60 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
       }
 
       try {
-        for (const index of primaryIndices) {
-          const outcome = await scanSite(index, 'pagespeed')
-          if (!outcome.success) primaryFailures.push(outcome)
+        const pageSpeedOutcomes = await mapWithConcurrency(
+          primaryIndices,
+          PRIMARY_SCAN_CONCURRENCY,
+          index => scanSite(index, 'pagespeed')
+        )
+        const fallbackIndices = pageSpeedOutcomes.filter(outcome => !outcome.success).map(outcome => outcome.index)
+        if (fallbackIndices.length) {
+          state.phase = 'primary-lighthouse-fallback'
+          await persistState()
         }
+        const lighthouseOutcomes = await mapWithConcurrency(
+          fallbackIndices,
+          workerConfigured ? Math.max(1, fallbackIndices.length) : PRIMARY_SCAN_CONCURRENCY,
+          index => {
+            const pageSpeedOutcome = pageSpeedOutcomes.find(outcome => outcome.index === index)
+            return scanSite(index, 'lighthouse', pageSpeedOutcome?.analysis)
+          }
+        )
+        const fallbackByIndex = new Map(lighthouseOutcomes.map(outcome => [outcome.index, outcome]))
+        const afterFallback = pageSpeedOutcomes.map(outcome => fallbackByIndex.get(outcome.index) || outcome)
+        const recoveryIndices = afterFallback.filter(outcome => !outcome.success).map(outcome => outcome.index)
+        if (recoveryIndices.length) {
+          state.phase = 'primary-pagespeed-recovery'
+          await persistState()
+        }
+        const recoveryOutcomes = await mapWithConcurrency(
+          recoveryIndices,
+          PRIMARY_SCAN_CONCURRENCY,
+          index => {
+            const previousOutcome = afterFallback.find(outcome => outcome.index === index)
+            return scanSite(index, 'pagespeed', previousOutcome?.analysis)
+          }
+        )
+        const recoveryByIndex = new Map(recoveryOutcomes.map(outcome => [outcome.index, outcome]))
+        const afterPageSpeedRecovery = afterFallback.map(outcome => recoveryByIndex.get(outcome.index) || outcome)
+        const finalFallbackIndices = afterPageSpeedRecovery.filter(outcome => !outcome.success).map(outcome => outcome.index)
+        if (finalFallbackIndices.length) {
+          state.phase = 'primary-lighthouse-recovery'
+          await persistState()
+        }
+        const finalFallbackOutcomes = await mapWithConcurrency(
+          finalFallbackIndices,
+          workerConfigured ? Math.max(1, finalFallbackIndices.length) : PRIMARY_SCAN_CONCURRENCY,
+          index => {
+            const previousOutcome = afterPageSpeedRecovery.find(outcome => outcome.index === index)
+            return scanSite(index, 'lighthouse-devtools', previousOutcome?.analysis)
+          }
+        )
+        const finalFallbackByIndex = new Map(finalFallbackOutcomes.map(outcome => [outcome.index, outcome]))
+        const primaryOutcomes = afterPageSpeedRecovery.map(outcome => finalFallbackByIndex.get(outcome.index) || outcome)
+        primaryFailures.push(...primaryOutcomes.filter(outcome => !outcome.success))
 
+        state.phase = 'zain-pagespeed'
+        await persistState()
         const zainPageSpeedOutcome = await scanSite(zainIndex, 'pagespeed')
         const pageSpeedCompletedAt = new Date().toISOString()
         let zainLighthouseOutcome = null
@@ -1516,7 +1618,7 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
           state.emailStatus = { ...firstDelivery, zainPageSpeed: 'failed', zainUpdate: 'pending' }
           state.phase = 'zain-lighthouse-retry'
           await persistState()
-          zainLighthouseOutcome = await scanSite(zainIndex, 'lighthouse')
+          zainLighthouseOutcome = await scanSite(zainIndex, 'lighthouse', zainPageSpeedOutcome.analysis)
           if (zainLighthouseOutcome.success) {
             const updatedDelivery = await deliverPhaseReport([...state.sites], 'updated', new Date().toISOString())
             finalEmailStatus = { ...updatedDelivery, initialStatus: firstDelivery.status, zainPageSpeed: 'failed', zainUpdate: updatedDelivery.status }

@@ -1,8 +1,9 @@
 import PptxGenJS from 'pptxgenjs'
+import { WEBSITE_ORDER } from '../website-order.mjs'
 
 export const PPT_MOBILE = '#e6007e'
 export const PPT_DESKTOP = '#4f008c'
-export const PPT_DOMAIN_ORDER = ['stc.com.kw', 'kw.zain.com', 'ooredoo.com.kw', 'stc.com.bh', 'stc.com.sa', 'virgin.com']
+export const PPT_DOMAIN_ORDER = WEBSITE_ORDER
 
 export function orderPptDomains(domains = []) {
   return [

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHmac } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
-import lighthouse from 'lighthouse'
+import { Worker } from 'node:worker_threads'
 import { launch } from 'chrome-launcher'
 
 const CATEGORIES = ['performance', 'accessibility', 'best-practices', 'seo']
@@ -51,19 +51,29 @@ function issuesFrom(lhr) {
   }).filter(Boolean).sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]).slice(0, 25)
 }
 
-async function auditOnce(url, strategy) {
-  const chrome = await launch({ chromeFlags: ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--ignore-certificate-errors', '--window-size=1440,900'] })
+async function auditOnce(url, strategy, throttlingMethod = 'simulate') {
+  const chrome = await launch({ chromeFlags: ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--ignore-certificate-errors', '--disable-blink-features=AutomationControlled', '--window-size=1440,900'] })
   let auditTimer
+  let auditWorker
   try {
     const mobile = strategy === 'mobile'
-    const run = lighthouse(url, {
+    const options = {
       port: chrome.port, output: 'json', logLevel: 'silent', onlyCategories: CATEGORIES,
-      formFactor: mobile ? 'mobile' : 'desktop', throttlingMethod: 'simulate', maxWaitForLoad: 120_000,
+      formFactor: mobile ? 'mobile' : 'desktop', throttlingMethod, maxWaitForLoad: throttlingMethod === 'devtools' ? 180_000 : 120_000,
       screenEmulation: mobile
         ? { mobile: true, width: 412, height: 823, deviceScaleFactor: 1.75, disabled: false }
         : { mobile: false, width: 1440, height: 900, deviceScaleFactor: 1, disabled: false }
+    }
+    const run = new Promise((resolve, reject) => {
+      auditWorker = new Worker(new URL('./lighthouse-audit-thread.mjs', import.meta.url), {
+        workerData: { url, options }, execArgv: []
+      })
+      auditWorker.once('message', message => message.error ? reject(new Error(message.error)) : resolve(message))
+      auditWorker.once('error', reject)
+      auditWorker.once('exit', code => reject(new Error(`Lighthouse worker exited before returning a result (code ${code}).`)))
     })
-    const result = await Promise.race([run, new Promise((_, reject) => { auditTimer = setTimeout(() => reject(new Error(`${strategy} Lighthouse timed out.`)), 150_000) })])
+    const timeoutMs = throttlingMethod === 'devtools' ? 240_000 : 150_000
+    const result = await Promise.race([run, new Promise((_, reject) => { auditTimer = setTimeout(() => reject(new Error(`${strategy} Lighthouse ${throttlingMethod} audit timed out.`)), timeoutMs) })])
     const lhr = result?.lhr
     if (!lhr) throw new Error(`${strategy} Lighthouse returned no report.`)
     if (lhr.runtimeError?.message) throw new Error(lhr.runtimeError.message)
@@ -81,6 +91,7 @@ async function auditOnce(url, strategy) {
     }
   } finally {
     if (auditTimer) clearTimeout(auditTimer)
+    if (auditWorker) await auditWorker.terminate().catch(() => {})
     try { await chrome.kill() } catch { /* Chrome already exited. */ }
   }
 }
@@ -88,7 +99,7 @@ async function auditOnce(url, strategy) {
 async function audit(url, strategy, attempts = 2) {
   let lastError
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try { return await auditOnce(url, strategy) }
+    try { return await auditOnce(url, strategy, attempt === 1 ? 'simulate' : 'devtools') }
     catch (error) {
       lastError = error
       if (attempt < attempts) await new Promise(resolve => setTimeout(resolve, attempt * 3_000))
@@ -126,10 +137,10 @@ async function main() {
   try {
     const devices = {}
     const errors = {}
-    for (const strategy of ['mobile', 'desktop']) {
+    await Promise.all(['mobile', 'desktop'].map(async strategy => {
       try { devices[strategy] = await audit(url, strategy) }
       catch (error) { errors[strategy] = String(error.message || `${strategy} Lighthouse failed.`).replace(/\s+/g, ' ').trim() }
-    }
+    }))
     const ok = Object.keys(devices).length > 0
     payload = {
       requestId,

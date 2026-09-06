@@ -28,6 +28,7 @@ import {
   XCircle,
 } from "lucide-react";
 import PptReport from "./PptReport.jsx";
+import { orderWebsites } from "../website-order.mjs";
 
 const metrics = [
   ["performance", "Performance", Gauge],
@@ -1221,7 +1222,8 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
     ["overview", "history", "ppt", "findings", "emails", "admin"].find(
       (section) => allowedSections.includes(section),
     ) || "overview";
-  const [sites, setSites] = useState(() => loadSaved("webpulse-live-sites-v1"));
+  const [savedSites, setSites] = useState(() => loadSaved("webpulse-live-sites-v1"));
+  const sites = useMemo(() => orderWebsites(savedSites), [savedSites]);
   const [issues, setIssues] = useState(() =>
     loadSaved("webpulse-live-issues-v1"),
   );
@@ -1236,6 +1238,11 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
   const [batchItems, setBatchItems] = useState([]);
   const [emailRecipient, setEmailRecipient] = useState("");
   const [emailRecipients, setEmailRecipients] = useState(loadEmailRecipients);
+  const [manualRecipientMode, setManualRecipientMode] = useState("all");
+  const [selectedEmailRecipients, setSelectedEmailRecipients] = useState([]);
+  const manualRecipients = manualRecipientMode === "all"
+    ? emailRecipients
+    : emailRecipients.filter((recipient) => selectedEmailRecipients.includes(recipient));
   const [emailSchedule, setEmailSchedule] = useState(
     () =>
       localStorage.getItem("benchmark-email-schedule") ||
@@ -1321,7 +1328,7 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
   );
   const extraSites = sites.filter((site) => !standardDomains.has(site.domain));
   const comparisonSites = automation.standardUrls?.length
-    ? [...standardComparisonSites, ...extraSites]
+    ? orderWebsites([...standardComparisonSites, ...extraSites])
     : sites;
   const comparisonGroups = Array.from(
     { length: Math.ceil(comparisonSites.length / 3) },
@@ -1352,9 +1359,9 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
   const standardHistoryDomains = (automation.standardUrls || []).map(
     (standardUrl) => new URL(standardUrl).hostname.replace(/^www\./, ""),
   );
-  const historyDomains = standardHistoryDomains.length
+  const historyDomains = orderWebsites(standardHistoryDomains.length
     ? standardHistoryDomains
-    : historySites;
+    : historySites);
   const historyDevices =
     historyDevice === "All" ? ["Mobile", "Web"] : [historyDevice];
   const historyLookup = new Map();
@@ -2094,12 +2101,7 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
   function openGmailDraft() {
     if (!permissions.canSendEmail)
       return notify("You do not have permission to send email reports");
-    const recipients = [...emailRecipients];
-    if (
-      emailRecipient.trim() &&
-      /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailRecipient.trim())
-    )
-      recipients.push(emailRecipient.trim());
+    const recipients = [...manualRecipients];
     if (!recipients.length)
       return notify("Add at least one recipient email address");
     if (emailReportType === "history") {
@@ -2309,9 +2311,9 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
                   <span>Automated standard monitoring</span>
                   <h1>Six websites. One complete score check.</h1>
                   <p>
-                    Websites run in the displayed order using Google PageSpeed
-                    Insights. Zain runs last and receives one Lighthouse retry
-                    only when its PageSpeed test fails.
+                    PageSpeed checks run in bounded parallel batches. Every
+                    failed website receives one Lighthouse fallback, while Zain
+                    remains the final website tested.
                   </p>
                 </div>
                 <div className="automation-actions">
@@ -2375,9 +2377,17 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
                     : automation.status === "running"
                       ? automation.phase === "zain-lighthouse-retry"
                         ? "The first report was processed without Zain. Zain is receiving its single Lighthouse retry; an updated email will be sent only if it succeeds."
+                        : automation.phase === "primary-lighthouse-fallback"
+                          ? "PageSpeed checks are complete. Failed websites are receiving one bounded Lighthouse fallback before Zain runs last."
+                          : automation.phase === "primary-pagespeed-recovery"
+                            ? "Incomplete primary websites are receiving one final bounded PageSpeed recovery pass. Existing Mobile or Desktop results are preserved and merged."
+                            : automation.phase === "primary-lighthouse-recovery"
+                              ? "Only the remaining incomplete device columns are receiving a final Lighthouse recovery within the 18-minute limit."
+                          : automation.phase === "zain-pagespeed"
+                            ? "The five primary websites have finished their PageSpeed and Lighthouse checks. Zain is now running last through PageSpeed."
                         : automation.phase === "initial-report"
                           ? "Zain failed in PageSpeed and the first report is being sent without Zain data."
-                          : `Scores started at zero and all six websites are being checked in order with Zain last. ${autoSendAfterCheck ? "The daily report will be emailed to all saved recipients even when a website fails." : "The completed manual report will be held for review."}`
+                          : `Scores started at zero and the primary websites are being checked two at a time with Zain last. ${autoSendAfterCheck ? "The daily report will be emailed to all saved recipients even when a website fails." : "The completed manual report will be held for review."}`
                       : automation.status === "failed"
                         ? `${automation.error || "The automated process failed unexpectedly."} Review the saved stage details and email status.`
                         : automation.lastCompletedAt
@@ -2386,7 +2396,7 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
                 </span>
               </div>
               <div className="standard-url-grid">
-                {(automation.standardUrls || []).map((standardUrl, index) => {
+                {orderWebsites(automation.standardUrls || []).map((standardUrl, index) => {
                   const domain = new URL(standardUrl).hostname.replace(
                     /^www\./,
                     "",
@@ -3110,8 +3120,7 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
                 <span>Automated reporting</span>
                 <h1>Emails to send</h1>
                 <p>
-                  Send the latest Benchmark Report or Score History Report to
-                  the same saved recipients, with automated Sunday history.
+                  Choose your report, select who receives it, and review before sending.
                 </p>
               </div>
               <div
@@ -3141,14 +3150,18 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
               </div>
             </section>
 
+            <section className="email-delivery-overview" aria-label="Email delivery summary">
+              <div><Users size={20} /><span>Saved recipients<strong>{emailRecipients.length}</strong></span></div>
+              <div><Send size={20} /><span>Manual delivery<strong>{manualRecipients.length} selected</strong></span></div>
+              <div><CalendarClock size={20} /><span>Automatic delivery<strong>All saved recipients · 10:00 AM Kuwait</strong></span></div>
+            </section>
             <section className="email-layout">
               <article className="email-setup-card">
                 <div className="email-card-head">
-                  <span>Delivery setup</span>
-                  <h2>Report recipient and schedule</h2>
+                  <span>Prepare your email</span>
+                  <h2>Who should receive this report?</h2>
                   <p>
-                    Select a report for manual sending. Sunday delivery combines
-                    the daily benchmark plus a separate report for the previous 15 calendar days.
+                    Send to one person, a selected group, or everyone. Your manual selection does not change automatic delivery.
                   </p>
                 </div>
                 {!permissions.canSendEmail && (
@@ -3164,7 +3177,11 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
                   </div>
                 )}
                 <div className="recipient-manager">
-                  <span>Business email recipients</span>
+                  <div className="manual-recipient-modes" role="group" aria-label="Manual email recipients">
+                    <button type="button" aria-pressed={manualRecipientMode === "all"} onClick={() => setManualRecipientMode("all")}>All recipients</button>
+                    <button type="button" aria-pressed={manualRecipientMode === "selected"} onClick={() => setManualRecipientMode("selected")}>Choose recipients</button>
+                  </div>
+                  <span>Add to saved recipients</span>
                   <div className="recipient-entry">
                     <div>
                       <Mail size={16} />
@@ -3203,10 +3220,13 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
                     {emailRecipients.length ? (
                       emailRecipients.map((recipient) => (
                         <div className="recipient-row" key={recipient}>
-                          <i>
-                            <Mail size={13} />
-                          </i>
-                          <span>{recipient}</span>
+                          <label className="recipient-choice">
+                            <input type="checkbox" aria-label={`Send to ${recipient}`}
+                              disabled={!permissions.canSendEmail || manualRecipientMode === "all"}
+                              checked={manualRecipients.includes(recipient)}
+                              onChange={(event) => setSelectedEmailRecipients((current) => event.target.checked ? [...current, recipient] : current.filter((value) => value !== recipient))} />
+                            <span>{recipient}</span>
+                          </label>
                           <button
                             disabled={!permissions.canSendEmail}
                             onClick={() => removeEmailRecipient(recipient)}
@@ -3220,6 +3240,7 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
                       <p>No saved recipients yet.</p>
                     )}
                   </div>
+                  <p className="recipient-help">{manualRecipientMode === "all" ? "Everyone on this list will receive your manual report." : `${manualRecipients.length} selected. Tick the people who should receive this report.`}</p>
                 </div>
                 <div className="schedule-settings">
                   <label className="report-type-setting">
@@ -3353,19 +3374,20 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
                   </div>
                 </div>
                 <div className="email-buttons">
+                  <span className="manual-send-summary">Ready to send to <strong>{manualRecipients.length} recipient{manualRecipients.length === 1 ? "" : "s"}</strong></span>
                   {emailStatus.verified ? (
                     <button
                       className="connect-email secondary"
-                      onClick={() => sendEmailReport()}
-                      disabled={emailSending || !permissions.canSendEmail}
+                      onClick={() => sendEmailReport(manualRecipients.join(","))}
+                      disabled={emailSending || !permissions.canSendEmail || !manualRecipients.length}
                     >
                       <Send size={16} />
-                      {emailSending ? "Sending…" : "Send Manually"}
+                      {emailSending ? "Sending…" : manualRecipientMode === "all" ? "Send to all" : "Send to selected"}
                     </button>
                   ) : (
                     <button
                       className="connect-email secondary"
-                      disabled={!permissions.canSendEmail}
+                      disabled={!permissions.canSendEmail || !manualRecipients.length}
                       onClick={openGmailDraft}
                     >
                       <Mail size={16} />
