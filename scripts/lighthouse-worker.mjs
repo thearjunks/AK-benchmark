@@ -60,7 +60,7 @@ async function auditOnce(url, strategy, throttlingMethod = 'simulate') {
     const mobile = strategy === 'mobile'
     const options = {
       port: chrome.port, output: 'json', logLevel: 'silent', onlyCategories: CATEGORIES,
-      formFactor: mobile ? 'mobile' : 'desktop', throttlingMethod, maxWaitForLoad: throttlingMethod === 'devtools' ? 180_000 : 120_000,
+      formFactor: mobile ? 'mobile' : 'desktop', throttlingMethod, maxWaitForLoad: 120_000,
       screenEmulation: mobile
         ? { mobile: true, width: 412, height: 823, deviceScaleFactor: 1.75, disabled: false }
         : { mobile: false, width: 1440, height: 900, deviceScaleFactor: 1, disabled: false }
@@ -73,7 +73,7 @@ async function auditOnce(url, strategy, throttlingMethod = 'simulate') {
       auditWorker.once('error', reject)
       auditWorker.once('exit', code => reject(new Error(`Lighthouse worker exited before returning a result (code ${code}).`)))
     })
-    const timeoutMs = throttlingMethod === 'devtools' ? 240_000 : 150_000
+    const timeoutMs = 240_000
     const result = await Promise.race([run, new Promise((_, reject) => { auditTimer = setTimeout(() => reject(new Error(`${strategy} Lighthouse ${throttlingMethod} audit timed out.`)), timeoutMs) })])
     const lhr = result?.lhr
     if (!lhr) throw new Error(`${strategy} Lighthouse returned no report.`)
@@ -103,6 +103,7 @@ async function audit(url, strategy, attempts = 2) {
     try { return await auditOnce(url, strategy, attempt === 1 ? 'simulate' : 'devtools') }
     catch (error) {
       lastError = error
+      console.warn(`${strategy} attempt ${attempt}: ${error.message}`)
       if (attempt < attempts) await new Promise(resolve => setTimeout(resolve, attempt * 3_000))
     }
   }

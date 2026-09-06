@@ -25,7 +25,7 @@ assert.equal(timing.primaryConcurrency, 2)
 assert.equal(timing.providerAttempts, 1)
 assert.equal(timing.siteAttempts, 1)
 assert.ok(timing.pageSpeedTimeoutMs <= 90_000)
-assert.ok(timing.lighthouseTimeoutMs <= 120_000)
+assert.equal(timing.lighthouseTimeoutMs, 240_000)
 
 const zainOnly = classifyBatchFailures([{ domain: 'kw.zain.com', message: 'audit unavailable' }])
 assert.equal(zainOnly.canSend, true)

@@ -26,7 +26,7 @@ const STANDARD_URLS = [
 ]
 const DEVICE_METRICS = ['performance', 'accessibility', 'bestPractices', 'seo']
 const PAGE_SPEED_TIMEOUT_MS = 90_000
-const LIGHTHOUSE_TIMEOUT_MS = 120_000
+const LIGHTHOUSE_TIMEOUT_MS = 240_000
 const AUTOMATION_BUDGET_MS = 20 * 60 * 1000
 const PRIMARY_SCAN_CONCURRENCY = 2
 
@@ -260,7 +260,7 @@ async function runLighthouseFallback(targetUrl, strategy, throttlingMethod = 'si
       onlyCategories: CATEGORIES,
       formFactor: mobile ? 'mobile' : 'desktop',
       throttlingMethod,
-      maxWaitForLoad: throttlingMethod === 'devtools' ? 180_000 : 120_000,
+      maxWaitForLoad: 120_000,
       screenEmulation: mobile
         ? { mobile: true, width: 412, height: 823, deviceScaleFactor: 1.75, disabled: false }
         : { mobile: false, width: 1440, height: 900, deviceScaleFactor: 1, disabled: false }
@@ -1693,22 +1693,23 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
       state.progress[index] = { url: standardUrl, domain, status: 'scanning', attempt: 1, overall: 0, checkedAt: null, latestSite: zeroSite }
       state.individualRun = { url: standardUrl, domain, status: 'running', startedAt, updatedAt: startedAt, error: null }
       await persistState()
+      let partialResult
       try {
         let result
-        let partialResult
         let lastError
-        const canUseWorker = workerConfigured && domain === 'kw.zain.com'
+        const canUseWorker = workerConfigured
         for (let attempt = 1; attempt <= (canUseWorker ? 1 : 2); attempt += 1) {
           state.progress[index] = { ...state.progress[index], status: 'scanning', attempt }
           await persistState()
           try {
-            const candidate = await analyzeWebsite(standardUrl, apiKey, deploymentConfig.lighthouseFallbackMode)
+            const missingDevices = ['mobile', 'desktop'].filter(device => !hasCompleteDeviceScores(partialResult?.site, device))
+            const candidate = await analyzeWebsite(standardUrl, apiKey, deploymentConfig.lighthouseFallbackMode, canUseWorker ? 'pagespeed' : 'fallback', missingDevices)
             partialResult = mergeAuditAnalyses(partialResult, candidate, standardUrl)
             if (hasCompleteScoreMatrix(partialResult.site)) {
               result = partialResult
               break
             }
-            lastError = new Error('Mobile or Web score columns are incomplete.')
+            lastError = new Error(partialResult.site.scanWarning || 'Mobile or Web score columns are incomplete.')
           } catch (error) { lastError = error }
         }
         if (!result && canUseWorker) {
@@ -1760,7 +1761,19 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
       } catch (error) {
         const failedAt = new Date().toISOString()
         const message = cleanText(error.message || 'Score check failed.')
-        state.progress[index] = { ...state.progress[index], status: 'failed', overall: 0, checkedAt: null, message }
+        if (partialResult?.site) {
+          partialResult.site.standardUrl = standardUrl
+          partialResult.site.pending = false
+          partialResult.site.auditUnavailable = true
+          partialResult.site.scanWarning = message
+          state.sites[index] = partialResult.site
+          state.issues = [...state.issues.filter(issue => issue.site !== domain), ...partialResult.issues]
+          state.history = mergeHistory(state.history, historyRecordsForSite(partialResult.site))
+          await persistHistoryBackup()
+        } else {
+          state.sites[index] = { ...zeroSite, pending: false, auditUnavailable: true, scanWarning: message }
+        }
+        state.progress[index] = { ...state.progress[index], status: 'failed', overall: partialResult?.site?.overall ?? 0, checkedAt: partialResult?.site?.scannedAt || null, latestSite: state.sites[index], message }
         state.individualRun = { url: standardUrl, domain, status: 'failed', startedAt, failedAt, updatedAt: failedAt, error: message }
         state.status = 'failed'
         state.error = `${domain}: ${message}`
@@ -1912,9 +1925,9 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
           body += chunk
           if (body.length > 2_048) throw new Error('Request is too large.')
         }
-        const { url } = JSON.parse(body || '{}')
+        const { url, sendEmail } = JSON.parse(body || '{}')
         if (standardUrlIndex(url) < 0) throw new Error('Choose one of the six standard website URLs.')
-        const canSendEmail = req.benchmarkUser?.role === 'admin' || req.benchmarkPermissions?.canSendEmail === true
+        const canSendEmail = sendEmail !== false && (req.benchmarkUser?.role === 'admin' || req.benchmarkPermissions?.canSendEmail === true)
         runIndividualAutomation(url, canSendEmail).catch(() => {})
         res.statusCode = 202
         return res.end(JSON.stringify({ started: true, url: new URL(url).href }))
