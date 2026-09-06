@@ -4,6 +4,7 @@ import { mkdir, mkdtemp } from 'node:fs/promises'
 import { Worker } from 'node:worker_threads'
 import { launch } from 'chrome-launcher'
 import path from 'node:path'
+import desktopConfig from 'lighthouse/core/config/desktop-config.js'
 
 const server = createServer((req, res) => {
   res.setHeader('Content-Type', 'text/html')
@@ -31,6 +32,10 @@ try {
         timer = setTimeout(() => reject(new Error('Isolation verification timed out')), 60000)
       })
       assert.ok(!result.lhr.runtimeError, JSON.stringify(result.lhr.runtimeError))
+      if (formFactor === 'desktop') {
+        assert.deepEqual(result.lhr.configSettings.throttling, desktopConfig.settings.throttling)
+        assert.equal(result.lhr.configSettings.emulatedUserAgent, desktopConfig.settings.emulatedUserAgent)
+      }
       for (const name of ['performance', 'accessibility', 'best-practices', 'seo']) assert.equal(typeof result.lhr.categories[name].score, 'number')
       console.log(`${formFactor}: all four real Lighthouse category scores returned`)
     } finally {

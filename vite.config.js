@@ -9,6 +9,7 @@ import { Worker } from 'node:worker_threads'
 import { orderWebsites } from './website-order.mjs'
 import { fetchWorkerArtifact } from './worker-artifact.mjs'
 import { setDefaultAutoSelectFamilyAttemptTimeout } from 'node:net'
+import { execFileSync } from 'node:child_process'
 
 if (process.platform === 'win32') setDefaultAutoSelectFamilyAttemptTimeout(1500)
 import { authPlugin } from './auth.mjs'
@@ -1262,7 +1263,7 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
   let initialized = false
   let initializationError = null
   const workerRepository = String(deploymentConfig.lighthouseWorkerRepository || '')
-  const workerConfigured = /^[\w.-]+\/[\w.-]+$/.test(workerRepository) && Boolean(deploymentConfig.githubActionsToken && deploymentConfig.lighthouseCallbackToken && deploymentConfig.publicAppUrl)
+  const workerConfigured = /^[\w.-]+\/[\w.-]+$/.test(workerRepository) && Boolean(deploymentConfig.githubActionsToken && deploymentConfig.publicAppUrl && (deploymentConfig.lighthouseCallbackToken || deploymentConfig.localGithubFallback))
   const pendingWorkerRuns = new Map()
   let stateWriteQueue = Promise.resolve()
   let historyWriteQueue = Promise.resolve()
@@ -1334,7 +1335,7 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
         await new Promise(resolve => setTimeout(resolve, 15000))
         if (!pendingWorkerRuns.has(requestId)) return
         try {
-          const payload = await fetchWorkerArtifact({ repository: workerRepository, githubToken: deploymentConfig.githubActionsToken, callbackToken: deploymentConfig.lighthouseCallbackToken, requestId, url })
+          const payload = await fetchWorkerArtifact({ repository: workerRepository, githubToken: deploymentConfig.githubActionsToken, callbackToken: deploymentConfig.lighthouseCallbackToken, requestId, url, localAuthenticatedRef: deploymentConfig.localGithubFallback ? deploymentConfig.lighthouseWorkerRef : undefined })
           if (!payload || !pendingWorkerRuns.has(requestId)) continue
           clearTimeout(timer)
           pendingWorkerRuns.delete(requestId)
@@ -1797,7 +1798,7 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
         }
       }
       res.setHeader('Content-Type', 'application/json; charset=utf-8')
-      if (!workerConfigured || !verifyWorkerSignature(body, req.headers['x-benchmark-signature'])) {
+      if (!workerConfigured || !deploymentConfig.lighthouseCallbackToken || !verifyWorkerSignature(body, req.headers['x-benchmark-signature'])) {
         res.statusCode = 401
         return res.end(JSON.stringify({ error: 'Invalid worker signature.' }))
       }
@@ -1998,6 +1999,14 @@ function publicSnapshotPlugin() {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
+  const localGithubFallback = mode === 'development' && env.LOCAL_GITHUB_FALLBACK === 'true'
+  let githubActionsToken = env.GITHUB_ACTIONS_TOKEN || process.env.GITHUB_ACTIONS_TOKEN
+  if (localGithubFallback && !githubActionsToken) {
+    try {
+      const credential = execFileSync('git', ['credential', 'fill'], { input: 'protocol=https\nhost=github.com\n\n', encoding: 'utf8', windowsHide: true, timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'Never' } })
+      githubActionsToken = credential.split('\n').find(line => line.startsWith('password='))?.slice(9).trim()
+    } catch { console.warn('Local GitHub fallback is unavailable. Check the existing GitHub sign-in.') }
+  }
   const fallbackMode = String(env.LIGHTHOUSE_FALLBACK_MODE || process.env.LIGHTHOUSE_FALLBACK_MODE || (mode === 'production' ? 'managed' : 'direct')).toLowerCase()
   const emailConfig = { user: env.SMTP_USER, password: env.SMTP_APP_PASSWORD }
   const accessConfig = {
@@ -2015,11 +2024,12 @@ export default defineConfig(({ mode }) => {
     autoSendAfterCheck: String(env.AUTO_SEND_AFTER_CHECK || 'true').toLowerCase() === 'true',
     authConfigured: Boolean(env.ADMIN_PASSWORD && (env.ADMIN_EMAIL || env.SMTP_USER)),
     lighthouseFallbackMode: fallbackMode === 'managed' ? 'managed' : 'direct',
-    githubActionsToken: env.GITHUB_ACTIONS_TOKEN || process.env.GITHUB_ACTIONS_TOKEN,
+    githubActionsToken,
+    localGithubFallback,
     lighthouseCallbackToken: env.LIGHTHOUSE_CALLBACK_TOKEN || process.env.LIGHTHOUSE_CALLBACK_TOKEN,
     lighthouseWorkerRepository: env.LIGHTHOUSE_WORKER_REPOSITORY || process.env.LIGHTHOUSE_WORKER_REPOSITORY || 'thearjunks/AK-benchmark',
     lighthouseWorkerRef: env.LIGHTHOUSE_WORKER_REF || process.env.LIGHTHOUSE_WORKER_REF || 'main',
-    publicAppUrl: env.PUBLIC_APP_URL || process.env.PUBLIC_APP_URL
+    publicAppUrl: env.PUBLIC_APP_URL || process.env.PUBLIC_APP_URL || (localGithubFallback ? 'https://bench.stcdigitalhub.com' : undefined)
   }
   return {
     server: {

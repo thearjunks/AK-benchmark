@@ -12,7 +12,18 @@ export function readSignedWorkerResult(envelope, token, requestId, url) {
   return result
 }
 
-export async function fetchWorkerArtifact({ repository, githubToken, callbackToken, requestId, url, fetchImpl = fetch }) {
+export function readAuthenticatedWorkerResult(envelope, artifact, requestId, url, expectedRef) {
+  // Local development can authenticate directly to its own GitHub repository.
+  // Bind the result to both the requested workflow branch and unique audit ID.
+  if (!expectedRef || artifact.workflow_run?.head_branch !== expectedRef) throw new Error('Worker artifact came from a different branch.')
+  const body = String(envelope?.body || '')
+  if (Buffer.byteLength(body) > 250_000) throw new Error('Worker result exceeds the size limit.')
+  const result = JSON.parse(body)
+  if (result.requestId !== requestId || result.url !== new URL(url).href) throw new Error('Worker artifact does not match this audit request.')
+  return result
+}
+
+export async function fetchWorkerArtifact({ repository, githubToken, callbackToken, requestId, url, localAuthenticatedRef, fetchImpl = fetch }) {
   const api = `https://api.github.com/repos/${repository}/actions/artifacts`
   const headers = { Authorization: `Bearer ${githubToken}`, Accept: 'application/vnd.github+json' }
   const listing = await fetchImpl(`${api}?name=lighthouse-${encodeURIComponent(requestId)}&per_page=10`, { headers, signal: AbortSignal.timeout(15000) })
@@ -26,5 +37,8 @@ export async function fetchWorkerArtifact({ repository, githubToken, callbackTok
   const zip = await unzipper.Open.buffer(Buffer.from(await response.arrayBuffer()))
   const entry = zip.files.find(file => file.path === 'lighthouse-result.json')
   if (!entry || entry.uncompressedSize > 300_000) throw new Error('Worker result file is missing or too large.')
-  return readSignedWorkerResult(JSON.parse((await entry.buffer()).toString('utf8')), callbackToken, requestId, url)
+  const envelope = JSON.parse((await entry.buffer()).toString('utf8'))
+  return localAuthenticatedRef
+    ? readAuthenticatedWorkerResult(envelope, artifact, requestId, url, localAuthenticatedRef)
+    : readSignedWorkerResult(envelope, callbackToken, requestId, url)
 }
