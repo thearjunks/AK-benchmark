@@ -2390,7 +2390,7 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
                           : automation.phase === "primary-pagespeed-recovery"
                             ? "Incomplete primary websites are receiving one final bounded PageSpeed recovery pass. Existing Mobile or Desktop results are preserved and merged."
                             : automation.phase === "primary-lighthouse-recovery"
-                              ? "Only the remaining incomplete device columns are receiving a final Lighthouse recovery within the 18-minute limit."
+                              ? "Only the remaining incomplete device columns are receiving a final Lighthouse recovery within the 20-minute limit."
                           : automation.phase === "zain-pagespeed"
                             ? "The five primary websites have finished their PageSpeed and Lighthouse checks. Zain is now running last through PageSpeed."
                         : automation.phase === "initial-report"
