@@ -116,6 +116,7 @@ function scoreTone(score) {
 }
 
 function relativeTime(date) {
+  if (!date) return "Not checked yet";
   const minutes = Math.max(
     0,
     Math.round((Date.now() - new Date(date)) / 60000),
@@ -174,6 +175,11 @@ function deviceScore(site, device, metric) {
   if (metric === "performance")
     return device === "mobile" ? site.scores.mobile : site.scores.desktop;
   return null;
+}
+
+function availableOverall(site) {
+  if (!site || (!site.pending && site.coverage?.mobile === false && site.coverage?.desktop === false)) return null;
+  return site.overall;
 }
 
 function parseWebsiteEntries(value) {
@@ -1335,9 +1341,10 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
     { length: Math.ceil(comparisonSites.length / 3) },
     (_, index) => comparisonSites.slice(index * 3, index * 3 + 3),
   );
-  const average = sites.length
+  const availableScores = sites.map(availableOverall).filter((value) => typeof value === "number");
+  const average = availableScores.length
     ? Math.round(
-        sites.reduce((sum, site) => sum + site.overall, 0) / sites.length,
+        availableScores.reduce((sum, value) => sum + value, 0) / availableScores.length,
       )
     : null;
   const filteredIssues = issues.filter(
@@ -2410,10 +2417,7 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
                   const progress = automation.progress?.find(
                     (item) => item.url === standardUrl,
                   );
-                  const displayOverall =
-                    typeof progress?.overall === "number"
-                      ? progress.overall
-                      : site?.overall;
+                  const displayOverall = availableOverall(progress?.latestSite || site);
                   const displayCheckedAt =
                     progress?.checkedAt || site?.scannedAt;
                   return (
@@ -2519,7 +2523,7 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
                           issues
                         </small>
                       </span>
-                      <b className={scoreTone(site.overall)}>{site.overall}</b>
+                      <b className={scoreTone(availableOverall(site))}>{availableOverall(site) ?? "—"}</b>
                     </button>
                   );
                 })}
@@ -2572,9 +2576,7 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
                               </small>
                             </span>
                             <b>
-                              {typeof site.overall === "number"
-                                ? site.overall
-                                : "—"}
+                              {availableOverall(site) ?? "—"}
                             </b>
                           </div>
                         ))}
@@ -2607,7 +2609,7 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
                                       }
                                       title={
                                         value == null
-                                          ? `Waiting for complete ${deviceLabel} ${label} score`
+                                          ? `${deviceLabel} ${label} unavailable: ${site.scanWarning || "audit has not completed"}`
                                           : `${deviceLabel} ${label}: ${value}`
                                       }
                                     >
@@ -3673,9 +3675,7 @@ function DashboardApp({ currentUser, permissions, onLogout }) {
                                 <strong>{site.domain}</strong>
                               </span>
                               <b>
-                                {typeof site.overall === "number"
-                                  ? site.overall
-                                  : "—"}
+                                {availableOverall(site) ?? "—"}
                               </b>
                             </div>
                           ))}
