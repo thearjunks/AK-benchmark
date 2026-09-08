@@ -43,7 +43,7 @@ assert.deepEqual([2, 3, 4, 5, 6].map(column => januaryRow.getCell(column).value)
 assert.deepEqual([7, 8, 9, 10, 11].map(column => januaryRow.getCell(column).value), [100, 50, 94, 59, 76])
 assert.match(String(januaryRow.getCell(12).value), /imported date only/)
 
-const domains = orderPptDomains(['virgin.com', 'stc.com.sa', 'ooredoo.com.kw', 'stc.com.bh', 'kw.zain.com', 'stc.com.kw'])
+const domains = orderPptDomains(['virginmobile.com.kw', 'stc.com.sa', 'ooredoo.com.kw', 'stc.com.bh', 'kw.zain.com', 'stc.com.kw'])
 assert.deepEqual(domains, PPT_DOMAIN_ORDER)
 const labels = Object.fromEntries(domains.map(domain => [domain, domain]))
 const ppt = buildPptReportModel(combined, domains, labels, '2026-01-01', '2026-08-30')

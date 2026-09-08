@@ -50,6 +50,7 @@ const websiteLabels = {
   "stc.com.sa": "STC Saudi Arabia",
   "stc.com.bh": "STC Bahrain",
   "virgin.com": "Virgin",
+  "virginmobile.com.kw": "Virgin Mobile Kuwait",
 };
 const palette = [
   "#4f008c",

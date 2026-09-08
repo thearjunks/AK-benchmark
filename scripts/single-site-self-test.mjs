@@ -6,6 +6,8 @@ assert.equal(standardUrlIndex('https://www.ooredoo.com.kw/en'), 1)
 assert.equal(standardUrlIndex('https://www.kw.zain.com/en/shop'), 5)
 assert.equal(standardUrlIndex('https://example.com'), -1)
 assert.equal(standardUrlIndex('not a URL'), -1)
+assert.equal(standardUrlIndex('https://www.virginmobile.com.kw/en/'), 4)
+assert.equal(standardUrlIndex('https://www.virgin.com/'), -1)
 
 const partial = (device, source, performance) => ({
   site: {

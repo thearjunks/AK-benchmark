@@ -22,7 +22,7 @@ const STANDARD_URLS = [
   'https://www.ooredoo.com.kw/en',
   'https://www.stc.com.sa/en/personal/home.html',
   'https://www.stc.com.bh/',
-  'https://www.virgin.com/',
+  'https://www.virginmobile.com.kw/en/',
   'https://www.kw.zain.com/en/shop'
 ]
 const DEVICE_METRICS = ['performance', 'accessibility', 'bestPractices', 'seo']
@@ -948,7 +948,8 @@ const WEBSITE_META = {
   'ooredoo.com.kw': { name: 'Ooredoo Kuwait', page: 'Homepage', sheet: 'Ooredoo KW' },
   'stc.com.sa': { name: 'STC Saudi Arabia', page: 'Personal homepage', sheet: 'STC KSA' },
   'stc.com.bh': { name: 'STC Bahrain', page: 'Homepage', sheet: 'STC BH' },
-  'virgin.com': { name: 'Virgin', page: 'Homepage', sheet: 'Virgin' }
+  'virgin.com': { name: 'Virgin', page: 'Homepage', sheet: 'Virgin' },
+  'virginmobile.com.kw': { name: 'Virgin Mobile Kuwait', page: 'Homepage', sheet: 'Virgin Mobile KW' }
 }
 
 export function historyRecordsForSite(site) {
@@ -1409,6 +1410,15 @@ function automationPlugin(apiKey, emailConfig, deploymentConfig = {}) {
     state.history = mergeHistory(legacyHistory, Array.isArray(state.history) ? state.history : [])
     const seedSites = [...(Array.isArray(state.sites) ? state.sites : []), ...(state.progress || []).map(item => item.latestSite).filter(Boolean)]
     state.history = mergeHistory(state.history, seedSites.flatMap(historyRecordsForSite))
+    // Preserve the retired website in history, but never relabel its scores.
+    if (state.sites?.some(site => site?.domain === 'virgin.com') || state.progress?.some(item => item?.domain === 'virgin.com')) {
+      const index = STANDARD_URLS.indexOf('https://www.virginmobile.com.kw/en/')
+      const url = STANDARD_URLS[index]
+      const site = { ...zeroScoreSite(url, index), pending: false, auditUnavailable: true, scanWarning: 'Website URL changed. Run Check Score Now to capture Virgin Mobile Kuwait scores.' }
+      state.sites[index] = site
+      state.progress[index] = { url, domain: site.domain, status: 'queued', attempt: 0, checkedAt: null, overall: null, latestSite: site, message: site.scanWarning }
+      state.issues = (state.issues || []).filter(issue => issue.site !== 'virgin.com')
+    }
     state.nextRunAt = nextKuwaitRun(settings.time)
     state.nextHistoryEmailAt = nextSundayHistoryRun(settings.time)
     await persistState()

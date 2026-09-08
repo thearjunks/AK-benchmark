@@ -4,7 +4,7 @@ import JSZip from 'jszip'
 import { parseLegacyDesktopHistory, parseLegacyMobileHistory } from '../legacy-history.mjs'
 import { buildPptReportModel, createPptReportBytes, historyRange, orderPptDomains, PPT_DOMAIN_ORDER } from '../src/pptReport.js'
 
-const domains = orderPptDomains(['stc.com.sa', 'virgin.com', 'stc.com.bh', 'ooredoo.com.kw', 'kw.zain.com', 'stc.com.kw'])
+const domains = orderPptDomains(['stc.com.sa', 'virginmobile.com.kw', 'stc.com.bh', 'ooredoo.com.kw', 'kw.zain.com', 'stc.com.kw'])
 assert.deepEqual(domains, PPT_DOMAIN_ORDER)
 const labels = { 'stc.com.kw': 'STC Kuwait', 'kw.zain.com': 'Zain Kuwait', 'ooredoo.com.kw': 'Ooredoo Kuwait', 'stc.com.sa': 'STC Saudi Arabia', 'stc.com.bh': 'STC Bahrain', 'virgin.com': 'Virgin' }
 const state = JSON.parse(await readFile(new URL('../work/benchmark-automation-state.json', import.meta.url), 'utf8'))
